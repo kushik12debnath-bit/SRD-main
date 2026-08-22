@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: go-audit-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port 8001
+    envVars:
+      - key: MONGO_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+    rootDir: backend
