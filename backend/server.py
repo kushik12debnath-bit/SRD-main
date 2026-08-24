@@ -10,6 +10,7 @@ from bson import ObjectId
 import jwt
 import os
 from dotenv import load_dotenv
+from defaults import get_default_questionnaires, get_default_questionnaire_by_id
 
 load_dotenv()
 
@@ -1342,25 +1343,25 @@ async def admin_get_user_audits(user_id: str, admin: str = Depends(verify_admin)
 @app.get("/api/questionnaires")
 async def get_questionnaires(username: str = Depends(verify_token)):
     _ensure_init()
-    # Lazy-init questionnaires if empty
-    if _count("questionnaires") == 0:
-        try:
-            init_default_questionnaire()
-        except Exception as e:
-            print(f"Error init questionnaires: {e}")
     questionnaires = db_find("questionnaires")
+    if not questionnaires:
+        # Return hardcoded defaults when DB is empty (Vercel stateless)
+        questionnaires = get_default_questionnaires()
     for q in questionnaires:
         q["id"] = str(q["_id"])
-        del q["_id"]
+        q.pop("_id", None)
     return {"questionnaires": questionnaires}
 
 @app.get("/api/questionnaires/{questionnaire_id}")
 async def get_questionnaire(questionnaire_id: str, username: str = Depends(verify_token)):
-    questionnaire = questionnaires_collection.find_one({"_id": get_object_id(questionnaire_id)})
+    _ensure_init()
+    questionnaire = db_find_one("questionnaires", {"_id": get_object_id(questionnaire_id)})
+    if not questionnaire:
+        questionnaire = get_default_questionnaire_by_id(questionnaire_id)
     if not questionnaire:
         raise HTTPException(status_code=404, detail="Questionnaire not found")
     questionnaire["id"] = str(questionnaire["_id"])
-    del questionnaire["_id"]
+    questionnaire.pop("_id", None)
     return questionnaire
 
 @app.post("/api/questionnaires")
@@ -1433,8 +1434,11 @@ async def get_audit(audit_id: str, username: str = Depends(verify_token)):
 
 @app.post("/api/audits")
 async def create_audit(audit: AuditCreate, username: str = Depends(verify_token)):
-    # Verify questionnaire exists
-    questionnaire = questionnaires_collection.find_one({"_id": ObjectId(audit.questionnaire_id)})
+    _ensure_init()
+    # Verify questionnaire exists (check DB first, then defaults)
+    questionnaire = db_find_one("questionnaires", {"_id": get_object_id(audit.questionnaire_id)})
+    if not questionnaire:
+        questionnaire = get_default_questionnaire_by_id(audit.questionnaire_id)
     if not questionnaire:
         raise HTTPException(status_code=404, detail="Questionnaire not found")
     
