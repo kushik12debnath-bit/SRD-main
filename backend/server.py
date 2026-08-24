@@ -25,121 +25,110 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Middleware to ensure collections are initialized on every request
-@app.middleware("http")
-async def ensure_db_middleware(request, call_next):
-    ensure_collections()
-    response = await call_next(request)
-    return response
-
 # MongoDB connection with in-memory fallback
 MONGO_URL = os.getenv("MONGO_URL", "")
 client = None
 db = None
 use_memory = False
 
-# In-memory storage with file persistence for Vercel
+# Simple in-memory storage with /tmp file persistence for Vercel
 import json
 import threading
+import uuid
 MEMORY_FILE = "/tmp/memory_store.json"
 memory_lock = threading.Lock()
 
-def load_memory():
-    global memory_store, memory_counters
+# Global in-memory store
+_mem = {}
+_mem_initialized = False
+
+def _load_from_disk():
+    global _mem
     try:
         with open(MEMORY_FILE, "r") as f:
-            data = json.load(f)
-            memory_store = data.get("store", memory_store)
-            memory_counters = data.get("counters", memory_counters)
-    except (FileNotFoundError, json.JSONDecodeError):
-        memory_store = {"users": {}, "questionnaires": {}, "audits": {}, "capa_reports": {}, "audit_plans": {}, "organizations": {}}
-        memory_counters = {"id": 0}
+            _mem = json.load(f)
+    except Exception:
+        _mem = {}
 
-def save_memory():
+def _save_to_disk():
     try:
-        with memory_lock:
-            with open(MEMORY_FILE, "w") as f:
-                json.dump({"store": memory_store, "counters": memory_counters}, f)
+        with open(MEMORY_FILE, "w") as f:
+            json.dump(_mem, f)
     except Exception:
         pass
 
-# Load on startup
-load_memory()
+def _get_collection(name):
+    if name not in _mem:
+        _mem[name] = []
+    return _mem[name]
 
-class MemoryCursor:
-    def __init__(self, results):
-        self._results = list(results)
-    def sort(self, key, direction=1):
-        self._results.sort(key=lambda x: x.get(key, ''), reverse=(direction == -1))
-        return self
-    def limit(self, n):
-        self._results = self._results[:n]
-        return self
-    def __iter__(self):
-        return iter(self._results)
-    def __len__(self):
-        return len(self._results)
-    def __list__(self):
-        return self._results
+def _find(name, query=None):
+    docs = _get_collection(name)
+    if not query:
+        return list(docs)
+    return [d for d in docs if all(d.get(k) == v for k, v in query.items())]
 
-class MemoryCollection:
-    def __init__(self, name):
-        self.name = name
-    def find(self, query=None):
-        query = query or {}
-        results = []
-        for doc in memory_store[self.name].values():
-            match = True
-            for k, v in query.items():
-                if doc.get(k) != v:
-                    match = False
-                    break
-            if match:
-                results.append(doc)
-        return MemoryCursor(results)
-    def find_one(self, query=None):
-        query = query or {}
-        for doc in memory_store[self.name].values():
-            match = True
-            for k, v in query.items():
-                if doc.get(k) != v:
-                    match = False
-                    break
-            if match:
-                return doc
-        return None
-    def insert_one(self, doc):
-        if "_id" not in doc:
-            doc["_id"] = next_id()
-        memory_store[self.name][doc["_id"]] = doc.copy()
-        save_memory()
-        class Result:
-            inserted_id = doc["_id"]
-        return Result()
-    def update_one(self, query, update, upsert=False):
-        doc = self.find_one(query)
-        if doc and "$set" in update:
-            for k, v in update["$set"].items():
-                doc[k] = v
-            save_memory()
-        class Result:
-            matched_count = 1 if doc else 0
-            modified_count = 1 if doc else 0
-        return Result()
-    def delete_one(self, query):
-        doc = self.find_one(query)
-        if doc:
-            del memory_store[self.name][doc["_id"]]
-            save_memory()
-        class Result:
-            deleted_count = 1 if doc else 0
-        return Result()
-    def count_documents(self, query=None):
-        return len(self.find(query))
+def _find_one(name, query=None):
+    docs = _find(name, query)
+    return docs[0] if docs else None
 
+def _insert_one(name, doc):
+    if "_id" not in doc:
+        doc["_id"] = str(uuid.uuid4())
+    _get_collection(name).append(doc)
+    _save_to_disk()
+    return doc["_id"]
+
+def _update_one(name, query, updates):
+    doc = _find_one(name, query)
+    if doc and "$set" in updates:
+        for k, v in updates["$set"].items():
+            doc[k] = v
+        _save_to_disk()
+        return True
+    return False
+
+def _delete_one(name, query):
+    docs = _get_collection(name)
+    for i, d in enumerate(docs):
+        if all(d.get(k) == v for k, v in query.items()):
+            docs.pop(i)
+            _save_to_disk()
+            return True
+    return False
+
+def _count(name, query=None):
+    return len(_find(name, query))
+
+def _ensure_init():
+    """Ensure data is loaded and default admin/questionnaires exist."""
+    global _mem_initialized
+    if not _mem_initialized:
+        _load_from_disk()
+        _mem_initialized = True
+    # Create default admin if not exists
+    if _count("users", {"username": "SRD"}) == 0:
+        _insert_one("users", {
+            "username": "SRD",
+            "password": hash_password("7550"),
+            "full_name": "Admin",
+            "is_admin": True,
+            "is_active": True,
+            "created_at": datetime.utcnow().isoformat()
+        })
+
+
+# MongoDB collections (used when MONGO_URL is set)
+mongo_users = None
+mongo_questionnaires = None
+mongo_audits = None
+mongo_audit_plans = None
+mongo_capa_reports = None
+mongo_organizations = None
 
 def get_db():
     global client, db, use_memory
+    global mongo_users, mongo_questionnaires, mongo_audits, mongo_audit_plans, mongo_capa_reports, mongo_organizations
     if use_memory:
         return None
     if client is not None:
@@ -152,6 +141,12 @@ def get_db():
         client = MongoClient(MONGO_URL, serverSelectionTimeoutMS=5000)
         client.admin.command('ping')
         db = client["iso_audit_db"]
+        mongo_users = db["users"]
+        mongo_questionnaires = db["questionnaires"]
+        mongo_audits = db["audits"]
+        mongo_audit_plans = db["audit_plans"]
+        mongo_capa_reports = db["capa_reports"]
+        mongo_organizations = db["organizations"]
         print("Connected to MongoDB")
         return db
     except Exception as e:
@@ -159,38 +154,115 @@ def get_db():
         use_memory = True
         return None
 
-def ensure_collections():
-    global users_collection, questionnaires_collection, audits_collection, audit_plans_collection, capa_reports_collection, organizations_collection
-    if users_collection is not None:
-        return
-    get_db()
-    if use_memory:
-        load_memory()
-        users_collection = MemoryCollection("users")
-        questionnaires_collection = MemoryCollection("questionnaires")
-        audits_collection = MemoryCollection("audits")
-        capa_reports_collection = MemoryCollection("capa_reports")
-        audit_plans_collection = MemoryCollection("audit_plans")
-        organizations_collection = MemoryCollection("organizations")
-        # Create admin directly inline
-        if users_collection.count_documents({"username": "SRD"}) == 0:
-            users_collection.insert_one({
-                "username": "SRD",
-                "password": hash_password("7550"),
-                "full_name": "Admin",
-                "is_admin": True,
-                "is_active": True,
-                "created_at": datetime.utcnow().isoformat()
-            })
-        init_default_questionnaire()
-    else:
-        users_collection = db["users"]
-        questionnaires_collection = db["questionnaires"]
-        audits_collection = db["audits"]
-        audit_plans_collection = db["audit_plans"]
-        capa_reports_collection = db["capa_reports"]
-        organizations_collection = db["organizations"]
 
+
+# Collection wrapper - transparently uses MongoDB or in-memory
+def coll(name):
+    """Get the right collection based on mode"""
+    if use_memory:
+        return None  # signals to use in-memory helpers
+    mapping = {
+        'users': mongo_users,
+        'questionnaires': mongo_questionnaires,
+        'audits': mongo_audits,
+        'audit_plans': mongo_audit_plans,
+        'capa_reports': mongo_capa_reports,
+        'organizations': mongo_organizations,
+    }
+    return mapping.get(name)
+
+# Helper: query a collection (works for both modes)
+def db_find(name, query=None, sort_key=None, sort_dir=-1):
+    if use_memory:
+        results = _find(name, query)
+        if sort_key:
+            results.sort(key=lambda x: x.get(sort_key, ''), reverse=(sort_dir == -1))
+        return results
+    else:
+        c = coll(name)
+        cursor = c.find(query) if query else c.find()
+        if sort_key:
+            cursor = cursor.sort(sort_key, sort_dir)
+        return list(cursor)
+
+def db_find_one(name, query=None):
+    if use_memory:
+        return _find_one(name, query)
+    else:
+        return coll(name).find_one(query)
+
+def db_insert(name, doc):
+    if use_memory:
+        _id = _insert_one(name, doc)
+        doc["_id"] = _id
+        return doc
+    else:
+        coll(name).insert_one(doc)
+        return doc
+
+def db_update(name, query, update):
+    if use_memory:
+        return _update_one(name, query, update)
+    else:
+        result = coll(name).update_one(query, update)
+        return result.matched_count > 0
+
+def db_delete(name, query):
+    if use_memory:
+        return _delete_one(name, query)
+    else:
+        result = coll(name).delete_one(query)
+        return result.deleted_count > 0
+
+def db_count(name, query=None):
+    if use_memory:
+        return _count(name, query)
+    else:
+        return coll(name).count_documents(query)
+
+
+class CollectionProxy:
+    """Mimics MongoDB collection API using db_* helpers"""
+    def __init__(self, name):
+        self.name = name
+    def find(self, query=None):
+        return db_find(self.name, query)
+    def find_one(self, query=None):
+        return db_find_one(self.name, query)
+    def insert_one(self, doc):
+        result = db_insert(self.name, doc)
+        class R:
+            inserted_id = result.get("_id")
+        return R()
+    def update_one(self, query, update):
+        matched = db_update(self.name, query, update)
+        class R:
+            matched_count = 1 if matched else 0
+            modified_count = 1 if matched else 0
+        return R()
+    def delete_one(self, query):
+        deleted = db_delete(self.name, query)
+        class R:
+            deleted_count = 1 if deleted else 0
+        return R()
+    def count_documents(self, query=None):
+        return db_count(self.name, query)
+
+# Create proxy collection objects
+users_collection = CollectionProxy("users")
+questionnaires_collection = CollectionProxy("questionnaires")
+audits_collection = CollectionProxy("audits")
+audit_plans_collection = CollectionProxy("audit_plans")
+capa_reports_collection = CollectionProxy("capa_reports")
+organizations_collection = CollectionProxy("organizations")
+
+
+def get_object_id(oid_str):
+    """Convert string to ObjectId for MongoDB, or return string for in-memory"""
+    if use_memory:
+        return oid_str
+    else:
+        return ObjectId(oid_str)
 
 
 # JWT Secret
@@ -371,6 +443,7 @@ def create_token(username: str) -> str:
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
+    _ensure_init()
     try:
         token = credentials.credentials
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
@@ -389,25 +462,23 @@ def verify_admin(username: str = Depends(verify_token)) -> str:
         raise HTTPException(status_code=403, detail="Admin access required")
     return username
 
-# Initialize default admin account
 def init_default_admin():
     """Create default admin account if it doesn't exist"""
-    if users_collection.count_documents({"username": "SRD"}) == 0:
-        hashed = hash_password("7550")
+    if db_count("users", {"username": "SRD"}) == 0:
         admin_user = {
             "username": "SRD",
-            "password": hashed,
+            "password": hash_password("7550"),
             "full_name": "Admin",
             "is_admin": True,
             "is_active": True,
             "created_at": datetime.utcnow().isoformat()
         }
-        users_collection.insert_one(admin_user)
+        db_insert("users", admin_user)
 
 # Initialize default questionnaire
 def init_default_questionnaire():
     get_db()
-    if questionnaires_collection.count_documents({"name": "ISO 45001:2018"}) == 0:
+    if db_count("questionnaires", {"name": "ISO 45001:2018"}) == 0:
         default_questionnaire = {
             "name": "ISO 45001:2018",
             "description": "Occupational Health and Safety Management Systems - Internal Audit Questionnaire for Packaged Drinking Water Plant",
@@ -799,11 +870,11 @@ def init_default_questionnaire():
                 }
             ]
         }
-        questionnaires_collection.insert_one(default_questionnaire)
+        db_insert("questionnaires", default_questionnaire)
         print("Default ISO 45001:2018 questionnaire initialized")
     
     # Initialize ISO 9001:2015 (QMS)
-    if questionnaires_collection.count_documents({"name": "ISO 9001:2015"}) == 0:
+    if db_count("questionnaires", {"name": "ISO 9001:2015"}) == 0:
         qms_questionnaire = {
             "name": "ISO 9001:2015",
             "description": "Quality Management System - Internal Audit Questionnaire for Packaged Drinking Water Plant",
@@ -854,11 +925,11 @@ def init_default_questionnaire():
                 ]}
             ]
         }
-        questionnaires_collection.insert_one(qms_questionnaire)
+        db_insert("questionnaires", qms_questionnaire)
         print("Default ISO 9001:2015 questionnaire initialized")
     
     # Initialize ISO 14001:2015 (EMS)
-    if questionnaires_collection.count_documents({"name": "ISO 14001:2015"}) == 0:
+    if db_count("questionnaires", {"name": "ISO 14001:2015"}) == 0:
         ems_questionnaire = {
             "name": "ISO 14001:2015",
             "description": "Environmental Management System - Internal Audit Questionnaire for Packaged Drinking Water Plant",
@@ -908,11 +979,11 @@ def init_default_questionnaire():
                 ]}
             ]
         }
-        questionnaires_collection.insert_one(ems_questionnaire)
+        db_insert("questionnaires", ems_questionnaire)
         print("Default ISO 14001:2015 questionnaire initialized")
     
     # Initialize FSSC 22000 V6.0
-    if questionnaires_collection.count_documents({"name": "FSSC 22000 V6.0"}) == 0:
+    if db_count("questionnaires", {"name": "FSSC 22000 V6.0"}) == 0:
         fssc_questionnaire = {
             "name": "FSSC 22000 V6.0",
             "description": "Food Safety System Certification 22000 Version 6.0 - Audit Questionnaire for Packaged Drinking Water Plant",
@@ -989,7 +1060,7 @@ def init_default_questionnaire():
                 }
             ]
         }
-        questionnaires_collection.insert_one(fssc_questionnaire)
+        db_insert("questionnaires", fssc_questionnaire)
         print("Default FSSC 22000 V6.0 questionnaire initialized")
 
 # Auth Endpoints
@@ -1025,21 +1096,14 @@ async def register(user: UserRegister, admin: str = Depends(verify_admin)):
 
 @app.post("/api/auth/login")
 async def login(user: UserLogin):
-    ensure_collections()
-    # Direct test: insert and read
-    test_count = users_collection.count_documents({"username": "SRD"})
-    if test_count == 0:
-        users_collection.insert_one({"username": "SRD", "password": hash_password("7550"), "full_name": "Admin", "is_admin": True, "is_active": True, "created_at": "test"})
-    user_doc = users_collection.find_one({"username": user.username})
+    _ensure_init()
+    user_doc = db_find_one("users", {"username": user.username})
     if not user_doc:
-        raise HTTPException(status_code=401, detail=f"User not found after insert. count={users_collection.count_documents({})}, store_keys={list(memory_store.get('users',{}).keys())}")
+        raise HTTPException(status_code=401, detail="Invalid credentials")
     if not verify_password(user.password, user_doc["password"]):
-        raise HTTPException(status_code=401, detail="Wrong password")
-    
-    # Check if user account is active
+        raise HTTPException(status_code=401, detail="Invalid credentials")
     if not user_doc.get("is_active", True):
         raise HTTPException(status_code=403, detail="Account is disabled. Contact administrator.")
-    
     token = create_token(user.username)
     return {
         "message": "Login successful",
@@ -1178,7 +1242,7 @@ async def admin_get_users(admin: str = Depends(verify_admin)):
 @app.put("/api/admin/users/{user_id}/toggle-status")
 async def admin_toggle_user_status(user_id: str, admin: str = Depends(verify_admin)):
     """Admin-only endpoint to enable/disable user accounts"""
-    user = users_collection.find_one({"_id": ObjectId(user_id)})
+    user = users_collection.find_one({"_id": get_object_id(user_id)})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
@@ -1188,7 +1252,7 @@ async def admin_toggle_user_status(user_id: str, admin: str = Depends(verify_adm
     
     new_status = not user.get("is_active", True)
     users_collection.update_one(
-        {"_id": ObjectId(user_id)},
+        {"_id": get_object_id(user_id)},
         {"$set": {"is_active": new_status}}
     )
     
@@ -1204,7 +1268,7 @@ async def admin_toggle_user_status(user_id: str, admin: str = Depends(verify_adm
 @app.delete("/api/admin/users/{user_id}")
 async def admin_delete_user(user_id: str, admin: str = Depends(verify_admin)):
     """Admin-only endpoint to permanently delete user accounts"""
-    user = users_collection.find_one({"_id": ObjectId(user_id)})
+    user = users_collection.find_one({"_id": get_object_id(user_id)})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
@@ -1217,7 +1281,7 @@ async def admin_delete_user(user_id: str, admin: str = Depends(verify_admin)):
         raise HTTPException(status_code=400, detail="Cannot delete admin accounts")
     
     # Delete the user
-    users_collection.delete_one({"_id": ObjectId(user_id)})
+    users_collection.delete_one({"_id": get_object_id(user_id)})
     
     return {
         "message": "User deleted successfully",
@@ -1227,7 +1291,7 @@ async def admin_delete_user(user_id: str, admin: str = Depends(verify_admin)):
 @app.put("/api/admin/users/{user_id}/qualifications")
 async def admin_update_user_qualifications(user_id: str, data: QualificationsUpdate, admin: str = Depends(verify_admin)):
     """Admin-only endpoint to update any user's qualifications"""
-    user = users_collection.find_one({"_id": ObjectId(user_id)})
+    user = users_collection.find_one({"_id": get_object_id(user_id)})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
@@ -1243,7 +1307,7 @@ async def admin_update_user_qualifications(user_id: str, data: QualificationsUpd
         raise HTTPException(status_code=400, detail="No data to update")
     
     result = users_collection.update_one(
-        {"_id": ObjectId(user_id)},
+        {"_id": get_object_id(user_id)},
         {"$set": update_data}
     )
     
@@ -1260,12 +1324,12 @@ async def admin_update_user_qualifications(user_id: str, data: QualificationsUpd
 @app.get("/api/admin/users/{user_id}/audits")
 async def admin_get_user_audits(user_id: str, admin: str = Depends(verify_admin)):
     """Admin-only endpoint to get all audits for a specific user"""
-    user = users_collection.find_one({"_id": ObjectId(user_id)})
+    user = users_collection.find_one({"_id": get_object_id(user_id)})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
     # Get all audits for this user
-    audits = list(audits_collection.find({"auditor": user["username"]}).sort("created_at", -1))
+    audits = db_find("audits", {"auditor": user["username"]}, sort_key="created_at", sort_dir=-1)
     for audit in audits:
         audit["id"] = str(audit["_id"])
         del audit["_id"]
@@ -1283,7 +1347,7 @@ async def get_questionnaires(username: str = Depends(verify_token)):
 
 @app.get("/api/questionnaires/{questionnaire_id}")
 async def get_questionnaire(questionnaire_id: str, username: str = Depends(verify_token)):
-    questionnaire = questionnaires_collection.find_one({"_id": ObjectId(questionnaire_id)})
+    questionnaire = questionnaires_collection.find_one({"_id": get_object_id(questionnaire_id)})
     if not questionnaire:
         raise HTTPException(status_code=404, detail="Questionnaire not found")
     questionnaire["id"] = str(questionnaire["_id"])
@@ -1311,7 +1375,7 @@ async def update_questionnaire(
     
     update_data["updated_at"] = datetime.utcnow().isoformat()
     result = questionnaires_collection.update_one(
-        {"_id": ObjectId(questionnaire_id)},
+        {"_id": get_object_id(questionnaire_id)},
         {"$set": update_data}
     )
     if result.matched_count == 0:
@@ -1321,11 +1385,11 @@ async def update_questionnaire(
 @app.delete("/api/questionnaires/{questionnaire_id}")
 async def delete_questionnaire(questionnaire_id: str, username: str = Depends(verify_token)):
     # Check if it's the default questionnaire
-    questionnaire = questionnaires_collection.find_one({"_id": ObjectId(questionnaire_id)})
+    questionnaire = questionnaires_collection.find_one({"_id": get_object_id(questionnaire_id)})
     if questionnaire and questionnaire.get("is_default"):
         raise HTTPException(status_code=400, detail="Cannot delete default questionnaire")
     
-    result = questionnaires_collection.delete_one({"_id": ObjectId(questionnaire_id)})
+    result = questionnaires_collection.delete_one({"_id": get_object_id(questionnaire_id)})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Questionnaire not found")
     return {"message": "Questionnaire deleted successfully"}
@@ -1334,7 +1398,7 @@ async def delete_questionnaire(questionnaire_id: str, username: str = Depends(ve
 @app.get("/api/audits")
 async def get_audits(username: str = Depends(verify_token)):
     # All users (including admin) see only their own audits on the Audits tab
-    audits = list(audits_collection.find({"auditor": username}).sort("created_at", -1))
+    audits = db_find("audits", {"auditor": username}, sort_key="created_at", sort_dir=-1)
     for audit in audits:
         audit["id"] = str(audit["_id"])
         del audit["_id"]
@@ -1348,9 +1412,9 @@ async def get_audit(audit_id: str, username: str = Depends(verify_token)):
     
     # Admin can view any audit, regular users can only view their own
     if is_admin:
-        audit = audits_collection.find_one({"_id": ObjectId(audit_id)})
+        audit = audits_collection.find_one({"_id": get_object_id(audit_id)})
     else:
-        audit = audits_collection.find_one({"_id": ObjectId(audit_id), "auditor": username})
+        audit = audits_collection.find_one({"_id": get_object_id(audit_id), "auditor": username})
     
     if not audit:
         raise HTTPException(status_code=404, detail="Audit not found")
@@ -1390,7 +1454,7 @@ async def update_audit(audit_id: str, audit_update: AuditUpdate, username: str =
     update_data = {k: v for k, v in audit_update.dict().items() if v is not None}
     
     result = audits_collection.update_one(
-        {"_id": ObjectId(audit_id), "auditor": username},
+        {"_id": get_object_id(audit_id), "auditor": username},
         {"$set": update_data}
     )
     
@@ -1408,7 +1472,7 @@ async def upload_capa_file(audit_id: str, file_data: dict, username: str = Depen
     }
     
     result = audits_collection.update_one(
-        {"_id": ObjectId(audit_id), "auditor": username},
+        {"_id": get_object_id(audit_id), "auditor": username},
         {"$set": update_data}
     )
     
@@ -1421,7 +1485,7 @@ async def upload_capa_file(audit_id: str, file_data: dict, username: str = Depen
 async def delete_capa_file(audit_id: str, username: str = Depends(verify_token)):
     """Delete CAPA report file from audit"""
     result = audits_collection.update_one(
-        {"_id": ObjectId(audit_id), "auditor": username},
+        {"_id": get_object_id(audit_id), "auditor": username},
         {"$set": {"capa_report_file": None, "capa_report_filename": None}}
     )
     
@@ -1450,7 +1514,7 @@ async def get_capa_entries(audit_id: str, username: str = Depends(verify_token))
     """Get CAPA entries prepared for this audit"""
     user = users_collection.find_one({"username": username})
     is_admin = user.get("is_admin", False) if user else False
-    query = {"_id": ObjectId(audit_id)} if is_admin else {"_id": ObjectId(audit_id), "auditor": username}
+    query = {"_id": get_object_id(audit_id)} if is_admin else {"_id": get_object_id(audit_id), "auditor": username}
     audit = audits_collection.find_one(query)
     if not audit:
         raise HTTPException(status_code=404, detail="Audit not found")
@@ -1461,7 +1525,7 @@ async def save_capa_entries(audit_id: str, payload: CAPAEntriesPayload, username
     """Save CAPA entries (prepared online by auditee/auditor) for this audit"""
     user = users_collection.find_one({"username": username})
     is_admin = user.get("is_admin", False) if user else False
-    query = {"_id": ObjectId(audit_id)} if is_admin else {"_id": ObjectId(audit_id), "auditor": username}
+    query = {"_id": get_object_id(audit_id)} if is_admin else {"_id": get_object_id(audit_id), "auditor": username}
     result = audits_collection.update_one(
         query,
         {"$set": {
@@ -1476,7 +1540,7 @@ async def save_capa_entries(audit_id: str, payload: CAPAEntriesPayload, username
 
 @app.delete("/api/audits/{audit_id}")
 async def delete_audit(audit_id: str, username: str = Depends(verify_token)):
-    result = audits_collection.delete_one({"_id": ObjectId(audit_id), "auditor": username})
+    result = audits_collection.delete_one({"_id": get_object_id(audit_id), "auditor": username})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Audit not found")
     return {"message": "Audit deleted successfully"}
@@ -1495,7 +1559,7 @@ async def create_capa(capa: CAPAModel, username: str = Depends(verify_token)):
 @app.get("/api/capa")
 async def get_all_capa(username: str = Depends(verify_token)):
     """Get all CAPA reports for current user"""
-    capas = list(capa_reports_collection.find({"created_by": username}).sort("created_at", -1))
+    capas = db_find("capa_reports", {"created_by": username}, sort_key="created_at", sort_dir=-1)
     for capa in capas:
         capa["_id"] = str(capa["_id"])
     return capas
@@ -1503,7 +1567,7 @@ async def get_all_capa(username: str = Depends(verify_token)):
 @app.get("/api/capa/{capa_id}")
 async def get_capa(capa_id: str, username: str = Depends(verify_token)):
     """Get specific CAPA report"""
-    capa = capa_reports_collection.find_one({"_id": ObjectId(capa_id), "created_by": username})
+    capa = capa_reports_collection.find_one({"_id": get_object_id(capa_id), "created_by": username})
     if not capa:
         raise HTTPException(status_code=404, detail="CAPA report not found")
     capa["_id"] = str(capa["_id"])
@@ -1516,7 +1580,7 @@ async def update_capa(capa_id: str, updates: CAPAUpdate, username: str = Depends
     update_data["updated_at"] = datetime.utcnow().isoformat()
     
     result = capa_reports_collection.update_one(
-        {"_id": ObjectId(capa_id), "created_by": username},
+        {"_id": get_object_id(capa_id), "created_by": username},
         {"$set": update_data}
     )
     
@@ -1528,7 +1592,7 @@ async def update_capa(capa_id: str, updates: CAPAUpdate, username: str = Depends
 @app.delete("/api/capa/{capa_id}")
 async def delete_capa(capa_id: str, username: str = Depends(verify_token)):
     """Delete CAPA report"""
-    result = capa_reports_collection.delete_one({"_id": ObjectId(capa_id), "created_by": username})
+    result = capa_reports_collection.delete_one({"_id": get_object_id(capa_id), "created_by": username})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="CAPA report not found")
     return {"message": "CAPA report deleted successfully"}
@@ -1537,37 +1601,12 @@ async def delete_capa(capa_id: str, username: str = Depends(verify_token)):
 async def health_check():
     return {"status": "healthy"}
 
-@app.get("/api/debug")
-async def debug():
-    try:
-        h = hash_password("7550")
-        hp_works = True
-    except Exception as e:
-        h = str(e)
-        hp_works = False
-    return {"hp_works": hp_works, "hp_sample": h[:50] if hp_works else h}
-
 # Initialize default data on startup
 @app.on_event("startup")
 async def startup_event():
-    global users_collection, questionnaires_collection, audits_collection, audit_plans_collection, capa_reports_collection, organizations_collection
     try:
         get_db()
-        if use_memory:
-            users_collection = MemoryCollection("users")
-            questionnaires_collection = MemoryCollection("questionnaires")
-            audits_collection = MemoryCollection("audits")
-            capa_reports_collection = MemoryCollection("capa_reports")
-            audit_plans_collection = MemoryCollection("audit_plans")
-            organizations_collection = MemoryCollection("organizations")
-        else:
-            users_collection = db["users"]
-            questionnaires_collection = db["questionnaires"]
-            audits_collection = db["audits"]
-            audit_plans_collection = db["audit_plans"]
-            capa_reports_collection = db["capa_reports"]
-            organizations_collection = db["organizations"]
-        init_default_admin()
+        _ensure_init()
         init_default_questionnaire()
         print("App ready" + (" (in-memory mode)" if use_memory else " (MongoDB)"))
     except Exception as e:
