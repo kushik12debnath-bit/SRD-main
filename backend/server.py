@@ -1527,13 +1527,19 @@ async def health_check():
 
 @app.get("/api/debug")
 async def debug():
-    ensure_collections()
-    return {
-        "use_memory": use_memory,
-        "users_count": users_collection.count_documents({}) if users_collection else 0,
-        "questionnaires_count": questionnaires_collection.count_documents({}) if questionnaires_collection else 0,
-        "memory_file_exists": __import__('os').path.exists(MEMORY_FILE),
-    }
+    try:
+        ensure_collections()
+        return {
+            "use_memory": use_memory,
+            "users_count": users_collection.count_documents({}) if users_collection else 0,
+            "questionnaires_count": questionnaires_collection.count_documents({}) if questionnaires_collection else 0,
+            "memory_file_exists": __import__('os').path.exists(MEMORY_FILE),
+            "memory_store_keys": list(memory_store.keys()),
+            "users_store_keys": list(memory_store.get("users", {}).keys()),
+            "error": None,
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 # Initialize default data on startup
 @app.on_event("startup")
