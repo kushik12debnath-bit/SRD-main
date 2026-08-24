@@ -383,21 +383,17 @@ def verify_admin(username: str = Depends(verify_token)) -> str:
 # Initialize default admin account
 def init_default_admin():
     """Create default admin account if it doesn't exist"""
-    try:
-        if users_collection.count_documents({"username": "SRD"}) == 0:
-            hashed = hash_password("7550")
-            admin_user = {
-                "username": "SRD",
-                "password": hashed,
-                "full_name": "Admin",
-                "is_admin": True,
-                "is_active": True,
-                "created_at": datetime.utcnow().isoformat()
-            }
-            users_collection.insert_one(admin_user)
-            print("Default admin account created: SRD")
-    except Exception as e:
-        print(f"ERROR creating admin: {e}")
+    if users_collection.count_documents({"username": "SRD"}) == 0:
+        hashed = hash_password("7550")
+        admin_user = {
+            "username": "SRD",
+            "password": hashed,
+            "full_name": "Admin",
+            "is_admin": True,
+            "is_active": True,
+            "created_at": datetime.utcnow().isoformat()
+        }
+        users_collection.insert_one(admin_user)
 
 # Initialize default questionnaire
 def init_default_questionnaire():
