@@ -5,8 +5,6 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
-from pymongo import MongoClient
-from bson import ObjectId
 import jwt
 import os
 from dotenv import load_dotenv
@@ -26,246 +24,36 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# MongoDB connection with in-memory fallback
-MONGO_URL = os.getenv("MONGO_URL", "")
+# PostgreSQL database
+import json
+from db import get_conn, init_db, db_find, db_find_one, db_insert, db_update, db_delete, db_count
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+
+def _ensure_init():
+    """Ensure PostgreSQL tables and admin exist."""
+    global _pg_initialized
+    if not getattr(_ensure_init, '_done', False):
+        try:
+            init_db()
+            _ensure_init._done = True
+        except Exception as e:
+            print(f"PostgreSQL init warning: {e}")
+
+
+# Keep get_db and MongoDB references for backward compat but unused
+MONGO_URL = ""
 client = None
 db = None
 use_memory = False
 
-# Simple in-memory storage with /tmp file persistence for Vercel
-import json
-import threading
-import uuid
-MEMORY_FILE = "/tmp/memory_store.json"
-memory_lock = threading.Lock()
-
-# Global in-memory store
-_mem = {}
-_mem_initialized = False
-
-def _load_from_disk():
-    global _mem
-    try:
-        with open(MEMORY_FILE, "r") as f:
-            _mem = json.load(f)
-    except Exception:
-        _mem = {}
-
-def _save_to_disk():
-    try:
-        with open(MEMORY_FILE, "w") as f:
-            json.dump(_mem, f)
-    except Exception:
-        pass
-
-def _get_collection(name):
-    if name not in _mem:
-        _mem[name] = []
-    return _mem[name]
-
-def _find(name, query=None):
-    docs = _get_collection(name)
-    if not query:
-        return list(docs)
-    return [d for d in docs if all(d.get(k) == v for k, v in query.items())]
-
-def _find_one(name, query=None):
-    docs = _find(name, query)
-    return docs[0] if docs else None
-
-def _insert_one(name, doc):
-    if "_id" not in doc:
-        doc["_id"] = str(uuid.uuid4())
-    _get_collection(name).append(doc)
-    _save_to_disk()
-    return doc["_id"]
-
-def _update_one(name, query, updates):
-    doc = _find_one(name, query)
-    if doc and "$set" in updates:
-        for k, v in updates["$set"].items():
-            doc[k] = v
-        _save_to_disk()
-        return True
-    return False
-
-def _delete_one(name, query):
-    docs = _get_collection(name)
-    for i, d in enumerate(docs):
-        if all(d.get(k) == v for k, v in query.items()):
-            docs.pop(i)
-            _save_to_disk()
-            return True
-    return False
-
-def _count(name, query=None):
-    return len(_find(name, query))
-
-def _ensure_init():
-    """Ensure data is loaded and default admin exists."""
-    global _mem_initialized
-    if _mem_initialized:
-        return
-    _load_from_disk()
-    _mem_initialized = True
-    # Create default admin if not exists
-    if _count("users", {"username": "SRD"}) == 0:
-        _insert_one("users", {
-            "username": "SRD",
-            "password": hash_password("7550"),
-            "full_name": "Admin",
-            "is_admin": True,
-            "is_active": True,
-            "created_at": datetime.utcnow().isoformat()
-        })
-        print("Created default admin user")
-
-
-# MongoDB collections (used when MONGO_URL is set)
-mongo_users = None
-mongo_questionnaires = None
-mongo_audits = None
-mongo_audit_plans = None
-mongo_capa_reports = None
-mongo_organizations = None
-
 def get_db():
-    global client, db, use_memory
-    global mongo_users, mongo_questionnaires, mongo_audits, mongo_audit_plans, mongo_capa_reports, mongo_organizations
-    if use_memory:
-        return None
-    if client is not None:
-        return db
-    if not MONGO_URL:
-        print("No MONGO_URL set — using in-memory database")
-        use_memory = True
-        return None
-    try:
-        client = MongoClient(MONGO_URL, serverSelectionTimeoutMS=5000)
-        client.admin.command('ping')
-        db = client["iso_audit_db"]
-        mongo_users = db["users"]
-        mongo_questionnaires = db["questionnaires"]
-        mongo_audits = db["audits"]
-        mongo_audit_plans = db["audit_plans"]
-        mongo_capa_reports = db["capa_reports"]
-        mongo_organizations = db["organizations"]
-        print("Connected to MongoDB")
-        return db
-    except Exception as e:
-        print(f"MongoDB unavailable ({e}) — using in-memory database")
-        use_memory = True
-        return None
+    return None
 
-
-
-# Collection wrapper - transparently uses MongoDB or in-memory
-def coll(name):
-    """Get the right collection based on mode"""
-    if use_memory:
-        return None  # signals to use in-memory helpers
-    mapping = {
-        'users': mongo_users,
-        'questionnaires': mongo_questionnaires,
-        'audits': mongo_audits,
-        'audit_plans': mongo_audit_plans,
-        'capa_reports': mongo_capa_reports,
-        'organizations': mongo_organizations,
-    }
-    return mapping.get(name)
-
-# Helper: query a collection (works for both modes)
-def db_find(name, query=None, sort_key=None, sort_dir=-1):
-    if use_memory:
-        results = _find(name, query)
-        if sort_key:
-            results.sort(key=lambda x: x.get(sort_key, ''), reverse=(sort_dir == -1))
-        return results
-    else:
-        c = coll(name)
-        cursor = c.find(query) if query else c.find()
-        if sort_key:
-            cursor = cursor.sort(sort_key, sort_dir)
-        return list(cursor)
-
-def db_find_one(name, query=None):
-    if use_memory:
-        return _find_one(name, query)
-    else:
-        return coll(name).find_one(query)
-
-def db_insert(name, doc):
-    if use_memory:
-        _id = _insert_one(name, doc)
-        doc["_id"] = _id
-        return doc
-    else:
-        coll(name).insert_one(doc)
-        return doc
-
-def db_update(name, query, update):
-    if use_memory:
-        return _update_one(name, query, update)
-    else:
-        result = coll(name).update_one(query, update)
-        return result.matched_count > 0
-
-def db_delete(name, query):
-    if use_memory:
-        return _delete_one(name, query)
-    else:
-        result = coll(name).delete_one(query)
-        return result.deleted_count > 0
-
-def db_count(name, query=None):
-    if use_memory:
-        return _count(name, query)
-    else:
-        return coll(name).count_documents(query)
-
-
-class CollectionProxy:
-    """Mimics MongoDB collection API using db_* helpers"""
-    def __init__(self, name):
-        self.name = name
-    def find(self, query=None):
-        return db_find(self.name, query)
-    def find_one(self, query=None):
-        return db_find_one(self.name, query)
-    def insert_one(self, doc):
-        result = db_insert(self.name, doc)
-        class R:
-            inserted_id = result.get("_id")
-        return R()
-    def update_one(self, query, update):
-        matched = db_update(self.name, query, update)
-        class R:
-            matched_count = 1 if matched else 0
-            modified_count = 1 if matched else 0
-        return R()
-    def delete_one(self, query):
-        deleted = db_delete(self.name, query)
-        class R:
-            deleted_count = 1 if deleted else 0
-        return R()
-    def count_documents(self, query=None):
-        return db_count(self.name, query)
-
-# Create proxy collection objects
-users_collection = CollectionProxy("users")
-questionnaires_collection = CollectionProxy("questionnaires")
-audits_collection = CollectionProxy("audits")
-audit_plans_collection = CollectionProxy("audit_plans")
-capa_reports_collection = CollectionProxy("capa_reports")
-organizations_collection = CollectionProxy("organizations")
 
 
 def get_object_id(oid_str):
-    """Convert string to ObjectId for MongoDB, or return string for in-memory"""
-    if use_memory:
-        return oid_str
-    else:
-        return ObjectId(oid_str)
+    """Return string ID (PostgreSQL uses text IDs)"""
+    return oid_str
 
 
 # JWT Secret
@@ -423,20 +211,7 @@ class PDFRequest(BaseModel):
     filename: Optional[str] = "report"
 
 # Helper Functions
-import hashlib, base64, os as _os
-
-def hash_password(password: str) -> str:
-    salt = base64.b64encode(_os.urandom(32)).decode('utf-8')
-    h = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt.encode('utf-8'), 100000)
-    return f"{salt}:{base64.b64encode(h).decode('utf-8')}"
-
-def verify_password(password: str, hashed: str) -> bool:
-    try:
-        salt, h = hashed.split(':')
-        check = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt.encode('utf-8'), 100000)
-        return base64.b64encode(check).decode('utf-8') == h
-    except Exception:
-        return False
+from utils import hash_password, verify_password
 
 def create_token(username: str) -> str:
     payload = {
@@ -458,7 +233,7 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)) 
 
 def verify_admin(username: str = Depends(verify_token)) -> str:
     """Verify that the user is an admin"""
-    user = users_collection.find_one({"username": username})
+    user = db_find_one("users", {"username": username})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     if not user.get("is_admin", False):
@@ -1070,7 +845,7 @@ def init_default_questionnaire():
 @app.post("/api/auth/register")
 async def register(user: UserRegister, admin: str = Depends(verify_admin)):
     """Admin-only endpoint to register new users"""
-    if users_collection.find_one({"username": user.username}):
+    if db_find_one("users", {"username": user.username}):
         raise HTTPException(status_code=400, detail="Username already exists")
     
     hashed_pw = hash_password(user.password)
@@ -1085,7 +860,7 @@ async def register(user: UserRegister, admin: str = Depends(verify_admin)):
         "is_admin": False,  # Regular users are not admins
         "created_at": datetime.utcnow().isoformat()
     }
-    result = users_collection.insert_one(user_doc)
+    result = db_insert("users", user_doc)
     
     return {
         "message": "User registered successfully",
@@ -1121,7 +896,7 @@ async def login(user: UserLogin):
 
 @app.get("/api/auth/me")
 async def get_current_user(username: str = Depends(verify_token)):
-    user_doc = users_collection.find_one({"username": username})
+    user_doc = db_find_one("users", {"username": username})
     if not user_doc:
         raise HTTPException(status_code=404, detail="User not found")
     return {
@@ -1150,7 +925,7 @@ async def update_profile_picture(data: ProfilePictureUpdate, username: str = Dep
         update_data["profile_picture"] = data.profile_picture
         message = "Profile picture updated"
     
-    result = users_collection.update_one(
+    result = db_update("users", 
         {"username": username},
         {"$set": update_data}
     )
@@ -1175,7 +950,7 @@ async def update_qualifications(data: QualificationsUpdate, username: str = Depe
     if not update_data:
         raise HTTPException(status_code=400, detail="No data to update")
     
-    result = users_collection.update_one(
+    result = db_update("users", 
         {"username": username},
         {"$set": update_data}
     )
@@ -1194,7 +969,7 @@ async def update_qualifications(data: QualificationsUpdate, username: str = Depe
 @app.post("/api/admin/users")
 async def admin_create_user(user_data: AdminCreateUser, admin: str = Depends(verify_admin)):
     """Admin-only endpoint to create new users"""
-    if users_collection.find_one({"username": user_data.username}):
+    if db_find_one("users", {"username": user_data.username}):
         raise HTTPException(status_code=400, detail="Username already exists")
     
     hashed_pw = hash_password(user_data.password)
@@ -1210,7 +985,7 @@ async def admin_create_user(user_data: AdminCreateUser, admin: str = Depends(ver
         "created_at": datetime.utcnow().isoformat(),
         "created_by": admin
     }
-    result = users_collection.insert_one(user_doc)
+    result = db_insert("users", user_doc)
     
     return {
         "message": "User created successfully",
@@ -1226,7 +1001,7 @@ async def admin_create_user(user_data: AdminCreateUser, admin: str = Depends(ver
 @app.get("/api/admin/users")
 async def admin_get_users(admin: str = Depends(verify_admin)):
     """Admin-only endpoint to get all users"""
-    users = list(users_collection.find())
+    users = list(db_find("users"))
     users_list = []
     for user in users:
         users_list.append({
@@ -1245,7 +1020,7 @@ async def admin_get_users(admin: str = Depends(verify_admin)):
 @app.put("/api/admin/users/{user_id}/toggle-status")
 async def admin_toggle_user_status(user_id: str, admin: str = Depends(verify_admin)):
     """Admin-only endpoint to enable/disable user accounts"""
-    user = users_collection.find_one({"_id": get_object_id(user_id)})
+    user = db_find_one("users", {"_id": get_object_id(user_id)})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
@@ -1254,7 +1029,7 @@ async def admin_toggle_user_status(user_id: str, admin: str = Depends(verify_adm
         raise HTTPException(status_code=400, detail="Cannot disable your own account")
     
     new_status = not user.get("is_active", True)
-    users_collection.update_one(
+    db_update("users", 
         {"_id": get_object_id(user_id)},
         {"$set": {"is_active": new_status}}
     )
@@ -1271,7 +1046,7 @@ async def admin_toggle_user_status(user_id: str, admin: str = Depends(verify_adm
 @app.delete("/api/admin/users/{user_id}")
 async def admin_delete_user(user_id: str, admin: str = Depends(verify_admin)):
     """Admin-only endpoint to permanently delete user accounts"""
-    user = users_collection.find_one({"_id": get_object_id(user_id)})
+    user = db_find_one("users", {"_id": get_object_id(user_id)})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
@@ -1284,7 +1059,7 @@ async def admin_delete_user(user_id: str, admin: str = Depends(verify_admin)):
         raise HTTPException(status_code=400, detail="Cannot delete admin accounts")
     
     # Delete the user
-    users_collection.delete_one({"_id": get_object_id(user_id)})
+    db_delete("users", {"_id": get_object_id(user_id)})
     
     return {
         "message": "User deleted successfully",
@@ -1294,7 +1069,7 @@ async def admin_delete_user(user_id: str, admin: str = Depends(verify_admin)):
 @app.put("/api/admin/users/{user_id}/qualifications")
 async def admin_update_user_qualifications(user_id: str, data: QualificationsUpdate, admin: str = Depends(verify_admin)):
     """Admin-only endpoint to update any user's qualifications"""
-    user = users_collection.find_one({"_id": get_object_id(user_id)})
+    user = db_find_one("users", {"_id": get_object_id(user_id)})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
@@ -1309,7 +1084,7 @@ async def admin_update_user_qualifications(user_id: str, data: QualificationsUpd
     if not update_data:
         raise HTTPException(status_code=400, detail="No data to update")
     
-    result = users_collection.update_one(
+    result = db_update("users", 
         {"_id": get_object_id(user_id)},
         {"$set": update_data}
     )
@@ -1327,7 +1102,7 @@ async def admin_update_user_qualifications(user_id: str, data: QualificationsUpd
 @app.get("/api/admin/users/{user_id}/audits")
 async def admin_get_user_audits(user_id: str, admin: str = Depends(verify_admin)):
     """Admin-only endpoint to get all audits for a specific user"""
-    user = users_collection.find_one({"_id": get_object_id(user_id)})
+    user = db_find_one("users", {"_id": get_object_id(user_id)})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
@@ -1369,7 +1144,7 @@ async def create_questionnaire(questionnaire: QuestionnaireCreate, username: str
     questionnaire_doc["created_by"] = username
     questionnaire_doc["created_at"] = datetime.utcnow().isoformat()
     questionnaire_doc["is_default"] = False
-    result = questionnaires_collection.insert_one(questionnaire_doc)
+    result = db_insert("questionnaires", questionnaire_doc)
     return {"message": "Questionnaire created", "id": str(result.inserted_id)}
 
 @app.put("/api/questionnaires/{questionnaire_id}")
@@ -1383,7 +1158,7 @@ async def update_questionnaire(
         raise HTTPException(status_code=400, detail="No data to update")
     
     update_data["updated_at"] = datetime.utcnow().isoformat()
-    result = questionnaires_collection.update_one(
+    result = db_update("questionnaires", 
         {"_id": get_object_id(questionnaire_id)},
         {"$set": update_data}
     )
@@ -1394,11 +1169,11 @@ async def update_questionnaire(
 @app.delete("/api/questionnaires/{questionnaire_id}")
 async def delete_questionnaire(questionnaire_id: str, username: str = Depends(verify_token)):
     # Check if it's the default questionnaire
-    questionnaire = questionnaires_collection.find_one({"_id": get_object_id(questionnaire_id)})
+    questionnaire = db_find_one("questionnaires", {"_id": get_object_id(questionnaire_id)})
     if questionnaire and questionnaire.get("is_default"):
         raise HTTPException(status_code=400, detail="Cannot delete default questionnaire")
     
-    result = questionnaires_collection.delete_one({"_id": get_object_id(questionnaire_id)})
+    result = db_delete("questionnaires", {"_id": get_object_id(questionnaire_id)})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Questionnaire not found")
     return {"message": "Questionnaire deleted successfully"}
@@ -1416,14 +1191,14 @@ async def get_audits(username: str = Depends(verify_token)):
 @app.get("/api/audits/{audit_id}")
 async def get_audit(audit_id: str, username: str = Depends(verify_token)):
     # Check if user is admin
-    user = users_collection.find_one({"username": username})
+    user = db_find_one("users", {"username": username})
     is_admin = user.get("is_admin", False) if user else False
     
     # Admin can view any audit, regular users can only view their own
     if is_admin:
-        audit = audits_collection.find_one({"_id": get_object_id(audit_id)})
+        audit = db_find_one("audits", {"_id": get_object_id(audit_id)})
     else:
-        audit = audits_collection.find_one({"_id": get_object_id(audit_id), "auditor": username})
+        audit = db_find_one("audits", {"_id": get_object_id(audit_id), "auditor": username})
     
     if not audit:
         raise HTTPException(status_code=404, detail="Audit not found")
@@ -1458,14 +1233,14 @@ async def create_audit(audit: AuditCreate, username: str = Depends(verify_token)
         "created_at": datetime.utcnow().isoformat(),
         "updated_at": datetime.utcnow().isoformat()
     }
-    result = audits_collection.insert_one(audit_doc)
+    result = db_insert("audits", audit_doc)
     return {"message": "Audit created", "id": str(result.inserted_id)}
 
 @app.put("/api/audits/{audit_id}")
 async def update_audit(audit_id: str, audit_update: AuditUpdate, username: str = Depends(verify_token)):
     update_data = {k: v for k, v in audit_update.dict().items() if v is not None}
     
-    result = audits_collection.update_one(
+    result = db_update("audits", 
         {"_id": get_object_id(audit_id), "auditor": username},
         {"$set": update_data}
     )
@@ -1483,7 +1258,7 @@ async def upload_capa_file(audit_id: str, file_data: dict, username: str = Depen
         "capa_report_filename": file_data.get("filename")
     }
     
-    result = audits_collection.update_one(
+    result = db_update("audits", 
         {"_id": get_object_id(audit_id), "auditor": username},
         {"$set": update_data}
     )
@@ -1496,7 +1271,7 @@ async def upload_capa_file(audit_id: str, file_data: dict, username: str = Depen
 @app.delete("/api/audits/{audit_id}/capa-file")
 async def delete_capa_file(audit_id: str, username: str = Depends(verify_token)):
     """Delete CAPA report file from audit"""
-    result = audits_collection.update_one(
+    result = db_update("audits", 
         {"_id": get_object_id(audit_id), "auditor": username},
         {"$set": {"capa_report_file": None, "capa_report_filename": None}}
     )
@@ -1524,10 +1299,10 @@ def generate_report_pdf(req: PDFRequest, username: str = Depends(verify_token)):
 @app.get("/api/audits/{audit_id}/capa-entries")
 async def get_capa_entries(audit_id: str, username: str = Depends(verify_token)):
     """Get CAPA entries prepared for this audit"""
-    user = users_collection.find_one({"username": username})
+    user = db_find_one("users", {"username": username})
     is_admin = user.get("is_admin", False) if user else False
     query = {"_id": get_object_id(audit_id)} if is_admin else {"_id": get_object_id(audit_id), "auditor": username}
-    audit = audits_collection.find_one(query)
+    audit = db_find_one("audits", query)
     if not audit:
         raise HTTPException(status_code=404, detail="Audit not found")
     return {"capa_entries": audit.get("capa_entries", []), "capa_updated_by": audit.get("capa_updated_by"), "capa_updated_at": audit.get("capa_updated_at")}
@@ -1535,10 +1310,10 @@ async def get_capa_entries(audit_id: str, username: str = Depends(verify_token))
 @app.put("/api/audits/{audit_id}/capa-entries")
 async def save_capa_entries(audit_id: str, payload: CAPAEntriesPayload, username: str = Depends(verify_token)):
     """Save CAPA entries (prepared online by auditee/auditor) for this audit"""
-    user = users_collection.find_one({"username": username})
+    user = db_find_one("users", {"username": username})
     is_admin = user.get("is_admin", False) if user else False
     query = {"_id": get_object_id(audit_id)} if is_admin else {"_id": get_object_id(audit_id), "auditor": username}
-    result = audits_collection.update_one(
+    result = db_update("audits", 
         query,
         {"$set": {
             "capa_entries": [e.dict() for e in payload.entries],
@@ -1552,7 +1327,7 @@ async def save_capa_entries(audit_id: str, payload: CAPAEntriesPayload, username
 
 @app.delete("/api/audits/{audit_id}")
 async def delete_audit(audit_id: str, username: str = Depends(verify_token)):
-    result = audits_collection.delete_one({"_id": get_object_id(audit_id), "auditor": username})
+    result = db_delete("audits", {"_id": get_object_id(audit_id), "auditor": username})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Audit not found")
     return {"message": "Audit deleted successfully"}
@@ -1564,7 +1339,7 @@ async def create_capa(capa: CAPAModel, username: str = Depends(verify_token)):
     capa_dict = capa.dict()
     capa_dict["created_at"] = datetime.utcnow().isoformat()
     capa_dict["created_by"] = username
-    result = capa_reports_collection.insert_one(capa_dict)
+    result = db_insert("capa_reports", capa_dict)
     capa_dict["_id"] = str(result.inserted_id)
     return capa_dict
 
@@ -1579,7 +1354,7 @@ async def get_all_capa(username: str = Depends(verify_token)):
 @app.get("/api/capa/{capa_id}")
 async def get_capa(capa_id: str, username: str = Depends(verify_token)):
     """Get specific CAPA report"""
-    capa = capa_reports_collection.find_one({"_id": get_object_id(capa_id), "created_by": username})
+    capa = db_find_one("capa_reports", {"_id": get_object_id(capa_id), "created_by": username})
     if not capa:
         raise HTTPException(status_code=404, detail="CAPA report not found")
     capa["_id"] = str(capa["_id"])
@@ -1591,7 +1366,7 @@ async def update_capa(capa_id: str, updates: CAPAUpdate, username: str = Depends
     update_data = {k: v for k, v in updates.dict().items() if v is not None}
     update_data["updated_at"] = datetime.utcnow().isoformat()
     
-    result = capa_reports_collection.update_one(
+    result = db_update("capa_reports", 
         {"_id": get_object_id(capa_id), "created_by": username},
         {"$set": update_data}
     )
@@ -1604,7 +1379,7 @@ async def update_capa(capa_id: str, updates: CAPAUpdate, username: str = Depends
 @app.delete("/api/capa/{capa_id}")
 async def delete_capa(capa_id: str, username: str = Depends(verify_token)):
     """Delete CAPA report"""
-    result = capa_reports_collection.delete_one({"_id": get_object_id(capa_id), "created_by": username})
+    result = db_delete("capa_reports", {"_id": get_object_id(capa_id), "created_by": username})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="CAPA report not found")
     return {"message": "CAPA report deleted successfully"}
@@ -1617,10 +1392,8 @@ async def health_check():
 @app.on_event("startup")
 async def startup_event():
     try:
-        get_db()
         _ensure_init()
-        init_default_questionnaire()
-        print("App ready" + (" (in-memory mode)" if use_memory else " (MongoDB)"))
+        print("App ready (PostgreSQL)")
     except Exception as e:
         print(f"Warning: Could not initialize: {e}")
         print("App will start but database features will be unavailable")
