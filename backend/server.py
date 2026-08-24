@@ -7,7 +7,6 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
 from pymongo import MongoClient
 from bson import ObjectId
-import bcrypt
 import jwt
 import os
 from dotenv import load_dotenv
@@ -340,11 +339,20 @@ class PDFRequest(BaseModel):
     filename: Optional[str] = "report"
 
 # Helper Functions
+import hashlib, base64, os as _os
+
 def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    salt = base64.b64encode(_os.urandom(32)).decode('utf-8')
+    h = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt.encode('utf-8'), 100000)
+    return f"{salt}:{base64.b64encode(h).decode('utf-8')}"
 
 def verify_password(password: str, hashed: str) -> bool:
-    return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
+    try:
+        salt, h = hashed.split(':')
+        check = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt.encode('utf-8'), 100000)
+        return base64.b64encode(check).decode('utf-8') == h
+    except Exception:
+        return False
 
 def create_token(username: str) -> str:
     payload = {
