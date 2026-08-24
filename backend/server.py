@@ -39,13 +39,33 @@ client = None
 db = None
 use_memory = False
 
-# In-memory storage for when MongoDB is unavailable
-memory_store = {"users": {}, "questionnaires": {}, "audits": {}, "capa_reports": {}, "audit_plans": {}, "organizations": {}}
-memory_counters = {"id": 0}
+# In-memory storage with file persistence for Vercel
+import json
+import threading
+MEMORY_FILE = "/tmp/memory_store.json"
+memory_lock = threading.Lock()
 
-def next_id():
-    memory_counters["id"] += 1
-    return str(memory_counters["id"])
+def load_memory():
+    global memory_store, memory_counters
+    try:
+        with open(MEMORY_FILE, "r") as f:
+            data = json.load(f)
+            memory_store = data.get("store", memory_store)
+            memory_counters = data.get("counters", memory_counters)
+    except (FileNotFoundError, json.JSONDecodeError):
+        memory_store = {"users": {}, "questionnaires": {}, "audits": {}, "capa_reports": {}, "audit_plans": {}, "organizations": {}}
+        memory_counters = {"id": 0}
+
+def save_memory():
+    try:
+        with memory_lock:
+            with open(MEMORY_FILE, "w") as f:
+                json.dump({"store": memory_store, "counters": memory_counters}, f)
+    except Exception:
+        pass
+
+# Load on startup
+load_memory()
 
 class MemoryCursor:
     def __init__(self, results):
@@ -93,6 +113,7 @@ class MemoryCollection:
         if "_id" not in doc:
             doc["_id"] = next_id()
         memory_store[self.name][doc["_id"]] = doc.copy()
+        save_memory()
         class Result:
             inserted_id = doc["_id"]
         return Result()
@@ -101,6 +122,7 @@ class MemoryCollection:
         if doc and "$set" in update:
             for k, v in update["$set"].items():
                 doc[k] = v
+            save_memory()
         class Result:
             matched_count = 1 if doc else 0
             modified_count = 1 if doc else 0
@@ -109,6 +131,7 @@ class MemoryCollection:
         doc = self.find_one(query)
         if doc:
             del memory_store[self.name][doc["_id"]]
+            save_memory()
         class Result:
             deleted_count = 1 if doc else 0
         return Result()
@@ -143,6 +166,7 @@ def ensure_collections():
         return
     get_db()
     if use_memory:
+        load_memory()
         users_collection = MemoryCollection("users")
         questionnaires_collection = MemoryCollection("questionnaires")
         audits_collection = MemoryCollection("audits")
