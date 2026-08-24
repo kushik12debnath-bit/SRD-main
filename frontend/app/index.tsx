@@ -21,6 +21,10 @@ export default function Index() {
     setLoggingIn(true);
     try {
       await login(username, password);
+      // Navigate to dashboard after successful login
+      if (typeof window !== 'undefined') {
+        window.location.href = '/SRD-main/(tabs)/audits';
+      }
     } catch (error: any) {
       Alert.alert('Login Failed', error.message);
     } finally {
@@ -45,6 +49,10 @@ export default function Index() {
   }
 
   if (user) {
+    // Auto-redirect to dashboard
+    if (typeof window !== 'undefined') {
+      window.location.href = '/SRD-main/(tabs)/audits';
+    }
     return (
       <View style={styles.splashContainer}>
         <StatusBar barStyle="light-content" />
@@ -53,10 +61,8 @@ export default function Index() {
             <Text style={styles.logoIcon}>✓</Text>
           </View>
           <Text style={styles.splashTitle}>GO AUDIT</Text>
-          <Text style={styles.splashSub}>Welcome back, {user.full_name || user.username}!</Text>
-          <TouchableOpacity style={styles.dashboardButton} onPress={() => window.location.href = '/SRD-main/(tabs)/audits'}>
-            <Text style={styles.dashboardButtonText}>Go to Dashboard →</Text>
-          </TouchableOpacity>
+          <Text style={styles.splashSub}>Redirecting to dashboard...</Text>
+          <ActivityIndicator size="small" color="#FFFFFF" style={{ marginTop: 16 }} />
           <TouchableOpacity style={styles.logoutLink} onPress={() => {}}>
             <Text style={styles.logoutLinkText}>Or logout</Text>
           </TouchableOpacity>
