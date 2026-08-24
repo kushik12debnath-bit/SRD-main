@@ -200,7 +200,10 @@ def db_update(table, query, update):
     cur.execute(sql, params)
     matched = cur.rowcount > 0
     cur.close()
-    return matched
+    class Result:
+        matched_count = 1 if matched else 0
+        modified_count = 1 if matched else 0
+    return Result()
 
 def db_delete(table, query):
     conn = get_conn()
@@ -217,7 +220,9 @@ def db_delete(table, query):
     cur.execute(sql, params)
     deleted = cur.rowcount > 0
     cur.close()
-    return deleted
+    class Result:
+        deleted_count = 1 if deleted else 0
+    return Result()
 
 def db_count(table, query=None):
     return len(db_find(table, query))
