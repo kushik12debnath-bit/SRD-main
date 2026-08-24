@@ -150,12 +150,14 @@ def db_insert(table, doc):
     if "_id" not in doc:
         doc["_id"] = str(uuid.uuid4())
     doc_id = doc["_id"]
-    # Separate scalar and JSONB fields
+    # Map _id to id column for PostgreSQL
     jsonb_fields = ["clauses", "responses", "capa_entries", "closure_evidence"]
-    columns = []
-    values = []
-    placeholders = []
+    columns = ["id"]
+    values = [doc_id]
+    placeholders = ["%s"]
     for k, v in doc.items():
+        if k == "_id":
+            continue  # already added as 'id'
         if k in jsonb_fields:
             columns.append(k)
             values.append(json.dumps(v) if v else "[]")
@@ -164,11 +166,6 @@ def db_insert(table, doc):
             columns.append(k)
             values.append(v)
             placeholders.append("%s")
-    # id column
-    if "id" not in columns:
-        columns.insert(0, "id")
-        values.insert(0, doc_id)
-        placeholders.insert(0, "%s")
     sql = f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({', '.join(placeholders)})"
     cur.execute(sql, values)
     cur.close()
