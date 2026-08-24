@@ -26,16 +26,31 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# MongoDB connection
+# MongoDB connection (lazy - connect on first use)
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017")
-client = MongoClient(MONGO_URL)
-db = client["iso_audit_db"]
-users_collection = db["users"]
-questionnaires_collection = db["questionnaires"]
-audits_collection = db["audits"]
-audit_plans_collection = db["audit_plans"]
-capa_reports_collection = db["capa_reports"]
-organizations_collection = db["organizations"]
+client = None
+db = None
+users_collection = None
+questionnaires_collection = None
+audits_collection = None
+audit_plans_collection = None
+capa_reports_collection = None
+organizations_collection = None
+
+def get_db():
+    global client, db, users_collection, questionnaires_collection, audits_collection, audit_plans_collection, capa_reports_collection, organizations_collection
+    if client is None:
+        client = MongoClient(MONGO_URL, serverSelectionTimeoutMS=5000)
+        db = client["iso_audit_db"]
+        users_collection = db["users"]
+        questionnaires_collection = db["questionnaires"]
+        audits_collection = db["audits"]
+        audit_plans_collection = db["audit_plans"]
+        capa_reports_collection = db["capa_reports"]
+        organizations_collection = db["organizations"]
+    return db
+
+
 
 # JWT Secret
 JWT_SECRET = os.getenv("JWT_SECRET", "your-secret-key-change-in-production")
@@ -227,6 +242,7 @@ def verify_admin(username: str = Depends(verify_token)) -> str:
 # Initialize default admin account
 def init_default_admin():
     """Create default admin account if it doesn't exist"""
+    get_db()
     if users_collection.count_documents({"username": "SRD"}) == 0:
         admin_user = {
             "username": "SRD",
@@ -241,6 +257,7 @@ def init_default_admin():
 
 # Initialize default questionnaire
 def init_default_questionnaire():
+    get_db()
     if questionnaires_collection.count_documents({"name": "ISO 45001:2018"}) == 0:
         default_questionnaire = {
             "name": "ISO 45001:2018",
@@ -1367,8 +1384,14 @@ async def health_check():
 # Initialize default data on startup
 @app.on_event("startup")
 async def startup_event():
-    init_default_admin()
-    init_default_questionnaire()
+    try:
+        get_db()
+        print("Connected to MongoDB")
+        init_default_admin()
+        init_default_questionnaire()
+    except Exception as e:
+        print(f"Warning: Could not initialize: {e}")
+        print("App will start but database features will be unavailable")
 
 if __name__ == "__main__":
     import uvicorn
