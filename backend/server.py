@@ -1026,10 +1026,13 @@ async def register(user: UserRegister, admin: str = Depends(verify_admin)):
 @app.post("/api/auth/login")
 async def login(user: UserLogin):
     ensure_collections()
+    # Direct test: insert and read
+    test_count = users_collection.count_documents({"username": "SRD"})
+    if test_count == 0:
+        users_collection.insert_one({"username": "SRD", "password": hash_password("7550"), "full_name": "Admin", "is_admin": True, "is_active": True, "created_at": "test"})
     user_doc = users_collection.find_one({"username": user.username})
     if not user_doc:
-        # Debug: show state
-        raise HTTPException(status_code=401, detail=f"User not found. users_count={users_collection.count_documents({})}, use_memory={use_memory}")
+        raise HTTPException(status_code=401, detail=f"User not found after insert. count={users_collection.count_documents({})}, store_keys={list(memory_store.get('users',{}).keys())}")
     if not verify_password(user.password, user_doc["password"]):
         raise HTTPException(status_code=401, detail="Wrong password")
     
