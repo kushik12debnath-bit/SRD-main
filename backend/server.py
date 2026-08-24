@@ -1522,6 +1522,16 @@ async def delete_capa(capa_id: str, username: str = Depends(verify_token)):
 async def health_check():
     return {"status": "healthy"}
 
+@app.get("/api/debug")
+async def debug():
+    ensure_collections()
+    return {
+        "use_memory": use_memory,
+        "users_count": users_collection.count_documents({}) if users_collection else 0,
+        "questionnaires_count": questionnaires_collection.count_documents({}) if questionnaires_collection else 0,
+        "memory_file_exists": __import__('os').path.exists(MEMORY_FILE),
+    }
+
 # Initialize default data on startup
 @app.on_event("startup")
 async def startup_event():
