@@ -118,12 +118,6 @@ def _ensure_init():
             "created_at": datetime.utcnow().isoformat()
         })
         print("Created default admin user")
-    # Create default questionnaires (only if empty)
-    try:
-        if _count("questionnaires") == 0:
-            init_default_questionnaire()
-    except Exception as e:
-        print(f"Warning: Could not init questionnaires: {e}")
 
 
 # MongoDB collections (used when MONGO_URL is set)
@@ -1347,7 +1341,14 @@ async def admin_get_user_audits(user_id: str, admin: str = Depends(verify_admin)
 # Questionnaire Endpoints
 @app.get("/api/questionnaires")
 async def get_questionnaires(username: str = Depends(verify_token)):
-    questionnaires = list(questionnaires_collection.find())
+    _ensure_init()
+    # Lazy-init questionnaires if empty
+    if _count("questionnaires") == 0:
+        try:
+            init_default_questionnaire()
+        except Exception as e:
+            print(f"Error init questionnaires: {e}")
+    questionnaires = db_find("questionnaires")
     for q in questionnaires:
         q["id"] = str(q["_id"])
         del q["_id"]
