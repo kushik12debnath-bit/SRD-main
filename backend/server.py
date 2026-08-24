@@ -26,6 +26,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Middleware to ensure collections are initialized on every request
+@app.middleware("http")
+async def ensure_db_middleware(request, call_next):
+    ensure_collections()
+    response = await call_next(request)
+    return response
+
 # MongoDB connection with in-memory fallback
 MONGO_URL = os.getenv("MONGO_URL", "")
 client = None
@@ -117,11 +124,27 @@ def get_db():
         use_memory = True
         return None
 
-def get_collection(name):
-    if use_memory:
-        return MemoryCollection(name)
+def ensure_collections():
+    global users_collection, questionnaires_collection, audits_collection, audit_plans_collection, capa_reports_collection, organizations_collection
+    if users_collection is not None:
+        return
     get_db()
-    return {"users": db["users"], "questionnaires": db["questionnaires"], "audits": db["audits"], "capa_reports": db["capa_reports"], "audit_plans": db["audit_plans"], "organizations": db["organizations"]}[name]
+    if use_memory:
+        users_collection = MemoryCollection("users")
+        questionnaires_collection = MemoryCollection("questionnaires")
+        audits_collection = MemoryCollection("audits")
+        capa_reports_collection = MemoryCollection("capa_reports")
+        audit_plans_collection = MemoryCollection("audit_plans")
+        organizations_collection = MemoryCollection("organizations")
+        init_default_admin()
+        init_default_questionnaire()
+    else:
+        users_collection = db["users"]
+        questionnaires_collection = db["questionnaires"]
+        audits_collection = db["audits"]
+        audit_plans_collection = db["audit_plans"]
+        capa_reports_collection = db["capa_reports"]
+        organizations_collection = db["organizations"]
 
 
 
