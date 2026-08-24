@@ -1532,12 +1532,13 @@ async def health_check():
 
 @app.get("/api/debug")
 async def debug():
-    ensure_collections()
-    return {
-        "use_memory": use_memory,
-        "users_count": users_collection.count_documents({}),
-        "questionnaires_count": questionnaires_collection.count_documents({}),
-    }
+    try:
+        h = hash_password("7550")
+        hp_works = True
+    except Exception as e:
+        h = str(e)
+        hp_works = False
+    return {"hp_works": hp_works, "hp_sample": h[:50] if hp_works else h}
 
 # Initialize default data on startup
 @app.on_event("startup")
