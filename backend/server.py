@@ -101,11 +101,12 @@ def _count(name, query=None):
     return len(_find(name, query))
 
 def _ensure_init():
-    """Ensure data is loaded and default admin/questionnaires exist."""
+    """Ensure data is loaded and default admin exists."""
     global _mem_initialized
-    if not _mem_initialized:
-        _load_from_disk()
-        _mem_initialized = True
+    if _mem_initialized:
+        return
+    _load_from_disk()
+    _mem_initialized = True
     # Create default admin if not exists
     if _count("users", {"username": "SRD"}) == 0:
         _insert_one("users", {
@@ -116,8 +117,13 @@ def _ensure_init():
             "is_active": True,
             "created_at": datetime.utcnow().isoformat()
         })
-    # Create default questionnaires if not exists
-    init_default_questionnaire()
+        print("Created default admin user")
+    # Create default questionnaires (only if empty)
+    try:
+        if _count("questionnaires") == 0:
+            init_default_questionnaire()
+    except Exception as e:
+        print(f"Warning: Could not init questionnaires: {e}")
 
 
 # MongoDB collections (used when MONGO_URL is set)
