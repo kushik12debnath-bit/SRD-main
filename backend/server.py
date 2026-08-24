@@ -47,6 +47,22 @@ def next_id():
     memory_counters["id"] += 1
     return str(memory_counters["id"])
 
+class MemoryCursor:
+    def __init__(self, results):
+        self._results = list(results)
+    def sort(self, key, direction=1):
+        self._results.sort(key=lambda x: x.get(key, ''), reverse=(direction == -1))
+        return self
+    def limit(self, n):
+        self._results = self._results[:n]
+        return self
+    def __iter__(self):
+        return iter(self._results)
+    def __len__(self):
+        return len(self._results)
+    def __list__(self):
+        return self._results
+
 class MemoryCollection:
     def __init__(self, name):
         self.name = name
@@ -61,7 +77,7 @@ class MemoryCollection:
                     break
             if match:
                 results.append(doc)
-        return results
+        return MemoryCursor(results)
     def find_one(self, query=None):
         query = query or {}
         for doc in memory_store[self.name].values():
@@ -98,10 +114,7 @@ class MemoryCollection:
         return Result()
     def count_documents(self, query=None):
         return len(self.find(query))
-    def sort(self, *args):
-        return self
-    def limit(self, *args):
-        return self
+
 
 def get_db():
     global client, db, use_memory
