@@ -116,6 +116,8 @@ def _ensure_init():
             "is_active": True,
             "created_at": datetime.utcnow().isoformat()
         })
+    # Create default questionnaires if not exists
+    init_default_questionnaire()
 
 
 # MongoDB collections (used when MONGO_URL is set)
