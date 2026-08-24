@@ -1027,8 +1027,11 @@ async def register(user: UserRegister, admin: str = Depends(verify_admin)):
 async def login(user: UserLogin):
     ensure_collections()
     user_doc = users_collection.find_one({"username": user.username})
-    if not user_doc or not verify_password(user.password, user_doc["password"]):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+    if not user_doc:
+        # Debug: show state
+        raise HTTPException(status_code=401, detail=f"User not found. users_count={users_collection.count_documents({})}, use_memory={use_memory}")
+    if not verify_password(user.password, user_doc["password"]):
+        raise HTTPException(status_code=401, detail="Wrong password")
     
     # Check if user account is active
     if not user_doc.get("is_active", True):
