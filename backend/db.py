@@ -172,7 +172,9 @@ def db_insert(table, doc):
     sql = f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({', '.join(placeholders)})"
     cur.execute(sql, values)
     cur.close()
-    return doc_id
+    class Result:
+        inserted_id = doc_id
+    return Result()
 
 def db_update(table, query, update):
     conn = get_conn()
