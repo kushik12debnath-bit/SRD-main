@@ -1025,6 +1025,7 @@ async def register(user: UserRegister, admin: str = Depends(verify_admin)):
 
 @app.post("/api/auth/login")
 async def login(user: UserLogin):
+    ensure_collections()
     user_doc = users_collection.find_one({"username": user.username})
     if not user_doc or not verify_password(user.password, user_doc["password"]):
         raise HTTPException(status_code=401, detail="Invalid credentials")
