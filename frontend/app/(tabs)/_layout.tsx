@@ -1,36 +1,45 @@
 import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
+import { Platform } from 'react-native';
 
 export default function TabsLayout() {
   const { user } = useAuth();
-  // Only show Admin tab to developer account (SRD)
   const isDeveloper = user?.username === 'SRD';
 
   return (
     <Tabs
       screenOptions={{
-        tabBarActiveTintColor: '#3B82F6',
-        tabBarInactiveTintColor: '#9CA3AF',
+        tabBarActiveTintColor: '#1E40AF',
+        tabBarInactiveTintColor: '#94A3B8',
         tabBarStyle: {
           backgroundColor: '#FFFFFF',
-          borderTopWidth: 1,
-          borderTopColor: '#E5E7EB',
-          height: 60,
-          paddingBottom: 8,
+          borderTopWidth: 0,
+          height: Platform.OS === 'web' ? 64 : 70,
+          paddingBottom: Platform.OS === 'web' ? 8 : 20,
           paddingTop: 8,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: -4 },
+          shadowOpacity: 0.08,
+          shadowRadius: 12,
+          elevation: 12,
         },
         tabBarLabelStyle: {
-          fontSize: 12,
+          fontSize: 11,
           fontWeight: '600',
+          marginTop: 2,
         },
         headerShown: true,
         headerStyle: {
-          backgroundColor: '#3B82F6',
+          backgroundColor: '#0F172A',
+          shadowColor: 'transparent',
+          elevation: 0,
         },
         headerTintColor: '#FFFFFF',
         headerTitleStyle: {
-          fontWeight: 'bold',
+          fontWeight: '700',
+          fontSize: 18,
+          letterSpacing: 0.5,
         },
       }}
     >
@@ -46,11 +55,11 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="questionnaires"
         options={{
-          title: 'Questionnaires',
+          title: 'Standards',
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="document-text" size={size} color={color} />
           ),
-          href: isDeveloper ? '/(tabs)/questionnaires' : null, // Admin only
+          href: isDeveloper ? '/(tabs)/questionnaires' : null,
         }}
       />
       <Tabs.Screen
@@ -62,7 +71,6 @@ export default function TabsLayout() {
           ),
         }}
       />
-      {/* Admin Tab - Only visible to developer (SRD) */}
       <Tabs.Screen
         name="admin"
         options={{
@@ -70,7 +78,7 @@ export default function TabsLayout() {
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="shield-checkmark" size={size} color={color} />
           ),
-          href: isDeveloper ? '/(tabs)/admin' : null, // Hide tab if not developer
+          href: isDeveloper ? '/(tabs)/admin' : null,
         }}
       />
     </Tabs>

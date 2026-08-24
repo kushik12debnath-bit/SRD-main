@@ -1,579 +1,243 @@
 import React, { useState, useEffect } from 'react';
 import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  ScrollView,
-  Alert,
-  Platform,
-  Image,
-  ActivityIndicator,
-  TextInput,
+  View, Text, StyleSheet, TouchableOpacity, ScrollView, Alert,
+  Platform, Image, ActivityIndicator, TextInput,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
 import * as ImagePicker from 'expo-image-picker';
 import axios from 'axios';
-import Constants from 'expo-constants';
+import { API_URL } from '../../context/AuthContext';
 
 export default function ProfileScreen() {
   const { user, logout, token } = useAuth();
   const router = useRouter();
   const [profilePicture, setProfilePicture] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
-  const [qualifications, setQualifications] = useState<string>('');
-  const [certifications, setCertifications] = useState<string>('');
-  const [yearsExperience, setYearsExperience] = useState<string>('');
+  const [qualifications, setQualifications] = useState('');
+  const [certifications, setCertifications] = useState('');
+  const [yearsExperience, setYearsExperience] = useState('');
   const [isEditingQualifications, setIsEditingQualifications] = useState(false);
   const [savingQualifications, setSavingQualifications] = useState(false);
 
-  const API_URL = Constants.expoConfig?.extra?.EXPO_PUBLIC_BACKEND_URL || process.env.EXPO_PUBLIC_BACKEND_URL;
-
-  // Fetch user profile picture on mount
-  useEffect(() => {
-    fetchProfilePicture();
-  }, []);
+  useEffect(() => { fetchProfilePicture(); }, []);
 
   const fetchProfilePicture = async () => {
     try {
       const response = await axios.get(`${API_URL}/api/auth/me`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (response.data.profile_picture) {
-        setProfilePicture(response.data.profile_picture);
-      }
-      // Load qualifications data
+      if (response.data.profile_picture) setProfilePicture(response.data.profile_picture);
       setQualifications(response.data.qualifications || '');
       setCertifications(response.data.certifications || '');
       setYearsExperience(response.data.years_experience || '');
     } catch (error) {
-      console.error('Error fetching profile picture:', error);
+      console.error('Error fetching profile:', error);
     }
   };
 
   const pickImage = async () => {
-    try {
-      // Request permission
-      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (status !== 'granted') {
-        alert('Sorry, we need camera roll permissions to upload a profile picture!');
-        return;
-      }
-
-      // Launch image picker
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsEditing: true,
-        // Remove aspect ratio constraint - allow free cropping
-        quality: 0.7, // Better quality
-      });
-
-      if (!result.canceled && result.assets[0]) {
-        setUploading(true);
-        const uri = result.assets[0].uri;
-
-        // Convert to base64
-        const response = await fetch(uri);
-        const blob = await response.blob();
-        const reader = new FileReader();
-        
-        reader.onloadend = async () => {
-          const base64data = reader.result as string;
-          await uploadProfilePicture(base64data);
-        };
-        
-        reader.readAsDataURL(blob);
-      }
-    } catch (error) {
-      console.error('Error picking image:', error);
-      alert('Failed to pick image. Please try again.');
-      setUploading(false);
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') { alert('Camera roll permissions needed'); return; }
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, allowsEditing: true, quality: 0.7 });
+    if (!result.canceled && result.assets[0]) {
+      setUploading(true);
+      const uri = result.assets[0].uri;
+      const response = await fetch(uri);
+      const blob = await response.blob();
+      const reader = new FileReader();
+      reader.onloadend = async () => { await uploadProfilePicture(reader.result as string); };
+      reader.readAsDataURL(blob);
     }
   };
 
   const uploadProfilePicture = async (base64Image: string) => {
     try {
-      const response = await axios.put(
-        `${API_URL}/api/auth/profile-picture`,
-        { profile_picture: base64Image },
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-
-      if (response.data.profile_picture) {
-        setProfilePicture(response.data.profile_picture);
-        alert('Profile picture updated successfully!');
-      }
-    } catch (error) {
-      console.error('Error uploading profile picture:', error);
-      alert('Failed to upload profile picture. Please try again.');
-    } finally {
-      setUploading(false);
-    }
+      const response = await axios.put(`${API_URL}/api/auth/profile-picture`, { profile_picture: base64Image }, { headers: { Authorization: `Bearer ${token}` } });
+      if (response.data.profile_picture) { setProfilePicture(response.data.profile_picture); alert('Profile picture updated!'); }
+    } catch (error) { alert('Failed to upload picture'); } finally { setUploading(false); }
   };
 
   const deleteProfilePicture = async () => {
-    const confirmDelete = Platform.OS === 'web' 
-      ? window.confirm('Are you sure you want to delete your profile picture?')
-      : true;
-
-    if (!confirmDelete) return;
-
-    if (Platform.OS !== 'web') {
-      Alert.alert(
-        'Delete Profile Picture',
-        'Are you sure you want to delete your profile picture?',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Delete',
-            style: 'destructive',
-            onPress: async () => {
-              await performDelete();
-            },
-          },
-        ]
-      );
-    } else {
-      await performDelete();
-    }
-  };
-
-  const performDelete = async () => {
+    if (!window.confirm('Delete your profile picture?')) return;
     try {
       setUploading(true);
-      await axios.put(
-        `${API_URL}/api/auth/profile-picture`,
-        { profile_picture: null },
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-
+      await axios.put(`${API_URL}/api/auth/profile-picture`, { profile_picture: null }, { headers: { Authorization: `Bearer ${token}` } });
       setProfilePicture(null);
-      alert('Profile picture deleted successfully!');
-    } catch (error) {
-      console.error('Error deleting profile picture:', error);
-      alert('Failed to delete profile picture. Please try again.');
-    } finally {
-      setUploading(false);
-    }
+    } catch (error) { alert('Failed to delete picture'); } finally { setUploading(false); }
   };
 
   const handleSaveQualifications = async () => {
     try {
       setSavingQualifications(true);
-      await axios.put(
-        `${API_URL}/api/auth/qualifications`,
-        {
-          qualifications,
-          certifications,
-          years_of_experience: yearsExperience,
-        },
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-
+      await axios.put(`${API_URL}/api/auth/qualifications`, { qualifications, certifications, years_of_experience: yearsExperience }, { headers: { Authorization: `Bearer ${token}` } });
       setIsEditingQualifications(false);
-      // Reload profile data to reflect changes
       await fetchProfilePicture();
-      
-      if (Platform.OS === 'web') {
-        alert('Qualifications updated successfully!');
-      } else {
-        Alert.alert('Success', 'Qualifications updated successfully!');
-      }
-    } catch (error) {
-      console.error('Error updating qualifications:', error);
-      if (Platform.OS === 'web') {
-        alert('Failed to update qualifications. Please try again.');
-      } else {
-        Alert.alert('Error', 'Failed to update qualifications. Please try again.');
-      }
-    } finally {
-      setSavingQualifications(false);
-    }
+      alert('Qualifications updated!');
+    } catch (error) { alert('Failed to update'); } finally { setSavingQualifications(false); }
   };
 
   const handleLogout = () => {
-    if (Platform.OS === 'web') {
-      // Web platform
-      if (window.confirm('Are you sure you want to logout?')) {
-        logout();
-        router.replace('/(auth)/login');
-      }
-    } else {
-      // Mobile platform
-      Alert.alert(
-        'Logout',
-        'Are you sure you want to logout?',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Logout',
-            style: 'destructive',
-            onPress: async () => {
-              await logout();
-              router.replace('/(auth)/login');
-            },
-          },
-        ],
-        { cancelable: true }
-      );
-    }
+    if (window.confirm('Are you sure you want to logout?')) { logout(); }
+  };
+
+  const getInitials = () => {
+    const name = user?.full_name || user?.username || '';
+    return name.split(' ').map((n: string) => n[0]).join('').toUpperCase().slice(0, 2);
   };
 
   return (
     <ScrollView style={styles.container}>
+      {/* Header */}
       <View style={styles.header}>
-        <View style={styles.avatarWrapper}>
-          <View style={styles.avatarContainer}>
+        <View style={styles.avatarSection}>
+          <View style={styles.avatarLarge}>
             {profilePicture ? (
-              <Image
-                source={{ uri: profilePicture }}
-                style={styles.avatarImage}
-                resizeMode="cover"
-              />
+              <Image source={{ uri: profilePicture }} style={styles.avatarImage} resizeMode="cover" />
             ) : (
-              <Ionicons name="person" size={64} color="#FFFFFF" />
+              <Text style={styles.avatarInitials}>{getInitials()}</Text>
             )}
-            {uploading && (
-              <View style={styles.uploadingOverlay}>
-                <ActivityIndicator size="large" color="#FFFFFF" />
-              </View>
-            )}
+            {uploading && <View style={styles.uploadOverlay}><ActivityIndicator size="small" color="#FFF" /></View>}
           </View>
-          <View style={styles.avatarButtonsContainer}>
-            <TouchableOpacity 
-              style={styles.avatarActionButton} 
-              onPress={pickImage}
-              disabled={uploading}
-            >
-              <Ionicons name="camera" size={20} color="#3B82F6" />
-              <Text style={styles.avatarActionButtonText}>Upload</Text>
+          <View style={styles.avatarActions}>
+            <TouchableOpacity style={styles.avatarBtn} onPress={pickImage} disabled={uploading}>
+              <Ionicons name="camera" size={16} color="#3B82F6" />
+              <Text style={styles.avatarBtnText}>Photo</Text>
             </TouchableOpacity>
             {profilePicture && (
-              <TouchableOpacity 
-                style={[styles.avatarActionButton, styles.deleteButton]} 
-                onPress={deleteProfilePicture}
-                disabled={uploading}
-              >
-                <Ionicons name="trash-outline" size={20} color="#EF4444" />
-                <Text style={[styles.avatarActionButtonText, styles.deleteButtonText]}>Delete</Text>
+              <TouchableOpacity style={[styles.avatarBtn, styles.deleteBtn]} onPress={deleteProfilePicture} disabled={uploading}>
+                <Ionicons name="trash-outline" size={16} color="#EF4444" />
+                <Text style={[styles.avatarBtnText, { color: '#EF4444' }]}>Remove</Text>
               </TouchableOpacity>
             )}
           </View>
         </View>
-        <Text style={styles.name}>{user?.full_name || user?.username}</Text>
-        <Text style={styles.username}>@{user?.username}</Text>
+        <Text style={styles.profileName}>{user?.full_name || user?.username}</Text>
+        <Text style={styles.profileUsername}>@{user?.username}</Text>
+        {user?.is_admin && (
+          <View style={styles.adminChip}>
+            <Ionicons name="shield-checkmark" size={12} color="#FCD34D" />
+            <Text style={styles.adminChipText}>Administrator</Text>
+          </View>
+        )}
       </View>
 
+      {/* Qualifications */}
       <View style={styles.section}>
         <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>Auditor Qualifications</Text>
+          <Text style={styles.sectionTitle}>Qualifications</Text>
           {!isEditingQualifications ? (
-            <TouchableOpacity onPress={() => setIsEditingQualifications(true)}>
-              <Ionicons name="create-outline" size={24} color="#3B82F6" />
+            <TouchableOpacity onPress={() => setIsEditingQualifications(true)} style={styles.editBtn}>
+              <Ionicons name="create-outline" size={18} color="#3B82F6" />
+              <Text style={styles.editBtnText}>Edit</Text>
             </TouchableOpacity>
           ) : (
-            <View style={styles.editButtonsContainer}>
-              <TouchableOpacity 
-                onPress={handleSaveQualifications} 
-                disabled={savingQualifications}
-                style={styles.saveButton}
-              >
-                {savingQualifications ? (
-                  <ActivityIndicator size="small" color="#10B981" />
-                ) : (
-                  <Ionicons name="checkmark-circle" size={28} color="#10B981" />
-                )}
+            <View style={styles.editActions}>
+              <TouchableOpacity onPress={handleSaveQualifications} disabled={savingQualifications} style={styles.saveBtn}>
+                {savingQualifications ? <ActivityIndicator size="small" color="#059669" /> : <Ionicons name="checkmark-circle" size={24} color="#059669" />}
               </TouchableOpacity>
-              <TouchableOpacity 
-                onPress={() => {
-                  setIsEditingQualifications(false);
-                  fetchProfilePicture(); // Reload original values
-                }}
-                disabled={savingQualifications}
-                style={styles.cancelButton}
-              >
-                <Ionicons name="close-circle" size={28} color="#EF4444" />
+              <TouchableOpacity onPress={() => { setIsEditingQualifications(false); fetchProfilePicture(); }} style={styles.cancelBtn}>
+                <Ionicons name="close-circle" size={24} color="#EF4444" />
               </TouchableOpacity>
             </View>
           )}
         </View>
-        <View style={styles.infoCard}>
-          <View style={styles.infoRow}>
-            <Ionicons name="school-outline" size={20} color="#6B7280" />
-            <View style={styles.infoTextContainer}>
-              <Text style={styles.infoLabel}>Qualifications</Text>
-              {isEditingQualifications ? (
-                <TextInput
-                  style={styles.editInput}
-                  placeholder="e.g., B.Tech, MBA"
-                  value={qualifications}
-                  onChangeText={setQualifications}
-                  editable={!savingQualifications}
-                />
-              ) : (
-                <Text style={styles.infoValue}>
-                  {qualifications || 'Not specified'}
-                </Text>
-              )}
-            </View>
-          </View>
-          <View style={styles.infoRow}>
-            <Ionicons name="ribbon-outline" size={20} color="#6B7280" />
-            <View style={styles.infoTextContainer}>
-              <Text style={styles.infoLabel}>Certifications</Text>
-              {isEditingQualifications ? (
-                <TextInput
-                  style={styles.editInput}
-                  placeholder="e.g., ISO Lead Auditor"
-                  value={certifications}
-                  onChangeText={setCertifications}
-                  editable={!savingQualifications}
-                />
-              ) : (
-                <Text style={styles.infoValue}>
-                  {certifications || 'Not specified'}
-                </Text>
-              )}
-            </View>
-          </View>
-          <View style={styles.infoRow}>
-            <Ionicons name="time-outline" size={20} color="#6B7280" />
-            <View style={styles.infoTextContainer}>
-              <Text style={styles.infoLabel}>Years of Experience</Text>
-              {isEditingQualifications ? (
-                <TextInput
-                  style={styles.editInput}
-                  placeholder="e.g., 5"
-                  value={yearsExperience}
-                  onChangeText={setYearsExperience}
-                  keyboardType="numeric"
-                  editable={!savingQualifications}
-                />
-              ) : (
-                <Text style={styles.infoValue}>
-                  {yearsExperience ? `${yearsExperience} years` : 'Not specified'}
-                </Text>
-              )}
-            </View>
-          </View>
+        <View style={styles.card}>
+          <InfoRow icon="🎓" label="Qualifications" value={qualifications} editing={isEditingQualifications} onChangeText={setQualifications} />
+          <InfoRow icon="📜" label="Certifications" value={certifications} editing={isEditingQualifications} onChangeText={setCertifications} />
+          <InfoRow icon="⏱️" label="Experience" value={yearsExperience ? `${yearsExperience} years` : ''} editing={isEditingQualifications} onChangeText={setYearsExperience} numeric />
         </View>
       </View>
 
+      {/* Standards */}
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>App Information</Text>
-        <View style={styles.infoCard}>
-          <View style={styles.infoRow}>
-            <Ionicons name="information-circle-outline" size={20} color="#6B7280" />
-            <View style={styles.infoTextContainer}>
-              <Text style={styles.infoLabel}>Version</Text>
-              <Text style={styles.infoValue}>1.0.0</Text>
+        <Text style={styles.sectionTitle}>Supported Standards</Text>
+        <View style={styles.card}>
+          {['ISO 45001:2018 — Occupational Health & Safety', 'ISO 9001:2015 — Quality Management', 'ISO 14001:2015 — Environmental Management', 'FSSC 22000 V6.0 — Food Safety'].map((s, i) => (
+            <View key={i} style={styles.standardRow}>
+              <Text style={styles.standardIcon}>{['🛡️', '⭐', '🌿', '🍎'][i]}</Text>
+              <Text style={styles.standardName}>{s}</Text>
             </View>
-          </View>
-          <View style={styles.infoRow}>
-            <Ionicons name="shield-outline" size={20} color="#6B7280" />
-            <View style={styles.infoTextContainer}>
-              <Text style={styles.infoLabel}>Standards Supported</Text>
-              <Text style={styles.infoValue}>ISO 45001:2018 (OHSMS)</Text>
-              <Text style={styles.infoValue}>ISO 9001:2015 (QMS)</Text>
-              <Text style={styles.infoValue}>ISO 14001:2015 (EMS)</Text>
-              <Text style={styles.infoValue}>FSSC 22000 V6.0</Text>
-            </View>
-          </View>
-          <View style={styles.infoRow}>
-            <Ionicons name="code-outline" size={20} color="#6B7280" />
-            <View style={styles.infoTextContainer}>
-              <Text style={styles.infoLabel}>Developer</Text>
-              <Text style={styles.developerName}>Saila Ruidas</Text>
-              <Text style={styles.collaboration}>In collaboration with Emergent Lab</Text>
-            </View>
-          </View>
+          ))}
         </View>
       </View>
 
-      <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
+      {/* Logout */}
+      <TouchableOpacity style={styles.logoutButton} onPress={handleLogout} activeOpacity={0.7}>
         <Ionicons name="log-out-outline" size={20} color="#EF4444" />
-        <Text style={styles.logoutText}>Logout</Text>
+        <Text style={styles.logoutText}>Sign Out</Text>
       </TouchableOpacity>
+
+      {/* Footer */}
+      <View style={styles.footer}>
+        <Text style={styles.footerText}>GO AUDIT v1.0.0</Text>
+        <Text style={styles.footerSub}>By Saila Ruidas × Emergent Lab</Text>
+      </View>
     </ScrollView>
   );
 }
 
+function InfoRow({ icon, label, value, editing, onChangeText, numeric }: any) {
+  return (
+    <View style={infoStyles.row}>
+      <Text style={infoStyles.icon}>{icon}</Text>
+      <View style={infoStyles.textContainer}>
+        <Text style={infoStyles.label}>{label}</Text>
+        {editing ? (
+          <TextInput style={infoStyles.input} placeholder={`Enter ${label.toLowerCase()}`} placeholderTextColor="#94A3B8" value={value} onChangeText={onChangeText} keyboardType={numeric ? 'numeric' : 'default'} />
+        ) : (
+          <Text style={infoStyles.value}>{value || 'Not specified'}</Text>
+        )}
+      </View>
+    </View>
+  );
+}
+
+const infoStyles = StyleSheet.create({
+  row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' },
+  icon: { fontSize: 20, marginRight: 12, width: 28 },
+  textContainer: { flex: 1 },
+  label: { fontSize: 12, color: '#94A3B8', marginBottom: 2, textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: '600' },
+  value: { fontSize: 15, color: '#0F172A', fontWeight: '500' },
+  input: { borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 8, padding: 10, fontSize: 14, color: '#0F172A', backgroundColor: '#F8FAFC', marginTop: 4 },
+});
+
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#F3F4F6',
-  },
-  header: {
-    backgroundColor: '#3B82F6',
-    alignItems: 'center',
-    paddingVertical: 32,
-    paddingHorizontal: 24,
-  },
-  avatarWrapper: {
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  avatarContainer: {
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    backgroundColor: '#2563EB',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 12,
-    borderWidth: 4,
-    borderColor: '#FFFFFF',
-    overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 4,
-  },
-  avatarImage: {
-    width: '100%',
-    height: '100%',
-  },
-  uploadingOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  avatarButtonsContainer: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  avatarActionButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#EFF6FF',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    gap: 6,
-    borderWidth: 1,
-    borderColor: '#3B82F6',
-  },
-  avatarActionButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#3B82F6',
-  },
-  deleteButton: {
-    backgroundColor: '#FEF2F2',
-    borderColor: '#EF4444',
-  },
-  deleteButtonText: {
-    color: '#EF4444',
-  },
-  name: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#FFFFFF',
-    marginBottom: 4,
-  },
-  username: {
-    fontSize: 16,
-    color: '#DBEAFE',
-  },
-  section: {
-    padding: 16,
-  },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#1F2937',
-    marginBottom: 12,
-  },
-  sectionHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  editButtonsContainer: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  saveButton: {
-    padding: 4,
-  },
-  cancelButton: {
-    padding: 4,
-  },
-  editInput: {
-    borderWidth: 1,
-    borderColor: '#D1D5DB',
-    borderRadius: 8,
-    padding: 10,
-    fontSize: 14,
-    color: '#374151',
-    backgroundColor: '#F9FAFB',
-    marginTop: 6,
-  },
-  infoCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    padding: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  infoRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 12,
-  },
-  infoTextContainer: {
-    flex: 1,
-    marginLeft: 12,
-  },
-  infoLabel: {
-    fontSize: 14,
-    color: '#6B7280',
-    marginBottom: 2,
-  },
-  infoValue: {
-    fontSize: 16,
-    color: '#1F2937',
-    fontWeight: '500',
-  },
-  developerName: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#3B82F6',
-    marginTop: 2,
-  },
-  collaboration: {
-    fontSize: 12,
-    color: '#6B7280',
-    marginTop: 2,
-  },
-  logoutButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#FFFFFF',
-    marginHorizontal: 16,
-    marginVertical: 24,
-    padding: 16,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#FEE2E2',
-  },
-  logoutText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#EF4444',
-    marginLeft: 8,
-  },
+  container: { flex: 1, backgroundColor: '#F8FAFC' },
+  header: { backgroundColor: '#0F172A', alignItems: 'center', paddingVertical: 32, paddingHorizontal: 24 },
+  avatarSection: { alignItems: 'center', marginBottom: 16 },
+  avatarLarge: { width: 100, height: 100, borderRadius: 50, backgroundColor: '#1E40AF', justifyContent: 'center', alignItems: 'center', borderWidth: 3, borderColor: '#3B82F6', overflow: 'hidden', marginBottom: 12 },
+  avatarImage: { width: '100%', height: '100%' },
+  avatarInitials: { fontSize: 36, fontWeight: '700', color: '#FFFFFF' },
+  uploadOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
+  avatarActions: { flexDirection: 'row', gap: 10 },
+  avatarBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.1)', paddingHorizontal: 14, paddingVertical: 6, borderRadius: 16, gap: 4, borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)' },
+  avatarBtnText: { fontSize: 12, fontWeight: '600', color: '#93C5FD' },
+  deleteBtn: { borderColor: 'rgba(239,68,68,0.3)' },
+  profileName: { fontSize: 24, fontWeight: '700', color: '#FFFFFF', marginBottom: 2 },
+  profileUsername: { fontSize: 14, color: '#94A3B8', marginBottom: 10 },
+  adminChip: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(252,211,77,0.15)', paddingHorizontal: 12, paddingVertical: 5, borderRadius: 16, gap: 4 },
+  adminChipText: { fontSize: 12, fontWeight: '600', color: '#FCD34D' },
+
+  section: { padding: 16 },
+  sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+  sectionTitle: { fontSize: 16, fontWeight: '700', color: '#0F172A' },
+  editBtn: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  editBtnText: { fontSize: 14, fontWeight: '600', color: '#3B82F6' },
+  editActions: { flexDirection: 'row', gap: 8 },
+  saveBtn: { padding: 2 },
+  cancelBtn: { padding: 2 },
+  card: { backgroundColor: '#FFFFFF', borderRadius: 14, padding: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 3, elevation: 2 },
+
+  standardRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' },
+  standardIcon: { fontSize: 20, marginRight: 12 },
+  standardName: { fontSize: 14, color: '#0F172A', fontWeight: '500', flex: 1 },
+
+  logoutButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFFFFF', marginHorizontal: 16, marginTop: 8, padding: 16, borderRadius: 14, borderWidth: 1, borderColor: '#FEE2E2', gap: 8 },
+  logoutText: { fontSize: 16, fontWeight: '600', color: '#EF4444' },
+
+  footer: { alignItems: 'center', paddingVertical: 24 },
+  footerText: { fontSize: 12, color: '#94A3B8', fontWeight: '600' },
+  footerSub: { fontSize: 11, color: '#CBD5E1', marginTop: 2 },
 });
