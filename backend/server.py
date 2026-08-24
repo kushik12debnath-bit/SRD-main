@@ -26,29 +26,102 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# MongoDB connection (lazy - connect on first use)
-MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017")
+# MongoDB connection with in-memory fallback
+MONGO_URL = os.getenv("MONGO_URL", "")
 client = None
 db = None
-users_collection = None
-questionnaires_collection = None
-audits_collection = None
-audit_plans_collection = None
-capa_reports_collection = None
-organizations_collection = None
+use_memory = False
+
+# In-memory storage for when MongoDB is unavailable
+memory_store = {"users": {}, "questionnaires": {}, "audits": {}, "capa_reports": {}, "audit_plans": {}, "organizations": {}}
+memory_counters = {"id": 0}
+
+def next_id():
+    memory_counters["id"] += 1
+    return str(memory_counters["id"])
+
+class MemoryCollection:
+    def __init__(self, name):
+        self.name = name
+    def find(self, query=None):
+        query = query or {}
+        results = []
+        for doc in memory_store[self.name].values():
+            match = True
+            for k, v in query.items():
+                if doc.get(k) != v:
+                    match = False
+                    break
+            if match:
+                results.append(doc)
+        return results
+    def find_one(self, query=None):
+        query = query or {}
+        for doc in memory_store[self.name].values():
+            match = True
+            for k, v in query.items():
+                if doc.get(k) != v:
+                    match = False
+                    break
+            if match:
+                return doc
+        return None
+    def insert_one(self, doc):
+        if "_id" not in doc:
+            doc["_id"] = next_id()
+        memory_store[self.name][doc["_id"]] = doc.copy()
+        class Result:
+            inserted_id = doc["_id"]
+        return Result()
+    def update_one(self, query, update, upsert=False):
+        doc = self.find_one(query)
+        if doc and "$set" in update:
+            for k, v in update["$set"].items():
+                doc[k] = v
+        class Result:
+            matched_count = 1 if doc else 0
+            modified_count = 1 if doc else 0
+        return Result()
+    def delete_one(self, query):
+        doc = self.find_one(query)
+        if doc:
+            del memory_store[self.name][doc["_id"]]
+        class Result:
+            deleted_count = 1 if doc else 0
+        return Result()
+    def count_documents(self, query=None):
+        return len(self.find(query))
+    def sort(self, *args):
+        return self
+    def limit(self, *args):
+        return self
 
 def get_db():
-    global client, db, users_collection, questionnaires_collection, audits_collection, audit_plans_collection, capa_reports_collection, organizations_collection
-    if client is None:
+    global client, db, use_memory
+    if use_memory:
+        return None
+    if client is not None:
+        return db
+    if not MONGO_URL:
+        print("No MONGO_URL set — using in-memory database")
+        use_memory = True
+        return None
+    try:
         client = MongoClient(MONGO_URL, serverSelectionTimeoutMS=5000)
+        client.admin.command('ping')
         db = client["iso_audit_db"]
-        users_collection = db["users"]
-        questionnaires_collection = db["questionnaires"]
-        audits_collection = db["audits"]
-        audit_plans_collection = db["audit_plans"]
-        capa_reports_collection = db["capa_reports"]
-        organizations_collection = db["organizations"]
-    return db
+        print("Connected to MongoDB")
+        return db
+    except Exception as e:
+        print(f"MongoDB unavailable ({e}) — using in-memory database")
+        use_memory = True
+        return None
+
+def get_collection(name):
+    if use_memory:
+        return MemoryCollection(name)
+    get_db()
+    return {"users": db["users"], "questionnaires": db["questionnaires"], "audits": db["audits"], "capa_reports": db["capa_reports"], "audit_plans": db["audit_plans"], "organizations": db["organizations"]}[name]
 
 
 
@@ -1384,11 +1457,26 @@ async def health_check():
 # Initialize default data on startup
 @app.on_event("startup")
 async def startup_event():
+    global users_collection, questionnaires_collection, audits_collection, audit_plans_collection, capa_reports_collection, organizations_collection
     try:
         get_db()
-        print("Connected to MongoDB")
+        if use_memory:
+            users_collection = MemoryCollection("users")
+            questionnaires_collection = MemoryCollection("questionnaires")
+            audits_collection = MemoryCollection("audits")
+            capa_reports_collection = MemoryCollection("capa_reports")
+            audit_plans_collection = MemoryCollection("audit_plans")
+            organizations_collection = MemoryCollection("organizations")
+        else:
+            users_collection = db["users"]
+            questionnaires_collection = db["questionnaires"]
+            audits_collection = db["audits"]
+            audit_plans_collection = db["audit_plans"]
+            capa_reports_collection = db["capa_reports"]
+            organizations_collection = db["organizations"]
         init_default_admin()
         init_default_questionnaire()
+        print("App ready" + (" (in-memory mode)" if use_memory else " (MongoDB)"))
     except Exception as e:
         print(f"Warning: Could not initialize: {e}")
         print("App will start but database features will be unavailable")
