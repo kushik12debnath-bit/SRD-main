@@ -172,7 +172,16 @@ def ensure_collections():
         capa_reports_collection = MemoryCollection("capa_reports")
         audit_plans_collection = MemoryCollection("audit_plans")
         organizations_collection = MemoryCollection("organizations")
-        init_default_admin()
+        # Create admin directly inline
+        if users_collection.count_documents({"username": "SRD"}) == 0:
+            users_collection.insert_one({
+                "username": "SRD",
+                "password": hash_password("7550"),
+                "full_name": "Admin",
+                "is_admin": True,
+                "is_active": True,
+                "created_at": datetime.utcnow().isoformat()
+            })
         init_default_questionnaire()
     else:
         users_collection = db["users"]
