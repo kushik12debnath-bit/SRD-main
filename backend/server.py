@@ -1524,22 +1524,10 @@ async def health_check():
 @app.get("/api/debug")
 async def debug():
     ensure_collections()
-    # Force-create admin
-    admin_user = {
-        "username": "SRD",
-        "password": hash_password("7550"),
-        "full_name": "Admin",
-        "is_admin": True,
-        "is_active": True,
-        "created_at": datetime.utcnow().isoformat(),
-        "_id": "admin_1"
-    }
-    memory_store["users"]["admin_1"] = admin_user
-    save_memory()
     return {
         "use_memory": use_memory,
         "users_count": users_collection.count_documents({}),
-        "users_store": list(memory_store.get("users", {}).keys()),
+        "questionnaires_count": questionnaires_collection.count_documents({}),
     }
 
 # Initialize default data on startup
