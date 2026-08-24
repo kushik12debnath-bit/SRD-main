@@ -1342,11 +1342,8 @@ async def admin_get_user_audits(user_id: str, admin: str = Depends(verify_admin)
 # Questionnaire Endpoints
 @app.get("/api/questionnaires")
 async def get_questionnaires(username: str = Depends(verify_token)):
-    _ensure_init()
-    questionnaires = db_find("questionnaires")
-    if not questionnaires:
-        # Return hardcoded defaults when DB is empty (Vercel stateless)
-        questionnaires = get_default_questionnaires()
+    # Always return hardcoded defaults - works on stateless Vercel
+    questionnaires = get_default_questionnaires()
     for q in questionnaires:
         q["id"] = str(q["_id"])
         q.pop("_id", None)
@@ -1355,9 +1352,11 @@ async def get_questionnaires(username: str = Depends(verify_token)):
 @app.get("/api/questionnaires/{questionnaire_id}")
 async def get_questionnaire(questionnaire_id: str, username: str = Depends(verify_token)):
     _ensure_init()
-    questionnaire = db_find_one("questionnaires", {"_id": get_object_id(questionnaire_id)})
+    # Check defaults first (fast, no DB needed)
+    questionnaire = get_default_questionnaire_by_id(questionnaire_id)
     if not questionnaire:
-        questionnaire = get_default_questionnaire_by_id(questionnaire_id)
+        _ensure_init()
+        questionnaire = db_find_one("questionnaires", {"_id": get_object_id(questionnaire_id)})
     if not questionnaire:
         raise HTTPException(status_code=404, detail="Questionnaire not found")
     questionnaire["id"] = str(questionnaire["_id"])
@@ -1434,11 +1433,11 @@ async def get_audit(audit_id: str, username: str = Depends(verify_token)):
 
 @app.post("/api/audits")
 async def create_audit(audit: AuditCreate, username: str = Depends(verify_token)):
-    _ensure_init()
-    # Verify questionnaire exists (check DB first, then defaults)
-    questionnaire = db_find_one("questionnaires", {"_id": get_object_id(audit.questionnaire_id)})
+    # Check defaults first (fast), then DB
+    questionnaire = get_default_questionnaire_by_id(audit.questionnaire_id)
     if not questionnaire:
-        questionnaire = get_default_questionnaire_by_id(audit.questionnaire_id)
+        _ensure_init()
+        questionnaire = db_find_one("questionnaires", {"_id": get_object_id(audit.questionnaire_id)})
     if not questionnaire:
         raise HTTPException(status_code=404, detail="Questionnaire not found")
     
